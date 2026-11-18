@@ -1,0 +1,10 @@
+# ห้าม commit ข้อมูลจริง
+*.xls
+*.xlsx
+*.zip
+*.csv
+*.sqlite
+backup/
+__pycache__/
+.streamlit/secrets.toml
+~$*
