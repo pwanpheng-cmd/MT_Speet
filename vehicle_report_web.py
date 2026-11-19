@@ -18,7 +18,7 @@ import streamlit as st
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vehicle_report_app as core  # noqa: E402
 
-WEB_VERSION = "1.3.0"
+WEB_VERSION = "1.4.0"
 import inspect as _inspect
 # ใช้ได้ทั้ง Streamlit รุ่นใหม่ (width="stretch") และรุ่นเก่า (**FULL)
 FULL = ({"width": "stretch"} if "width" in _inspect.signature(st.button).parameters
@@ -37,18 +37,104 @@ def _secret(name, default=None):
         return default
 
 
-# รหัสผ่านชั้นที่ 2 (ถ้าตั้ง app_password ใน Secrets ของ Streamlit Cloud)
-_pw = _secret("app_password")
-if _pw and not st.session_state.get("auth_ok"):
-    st.markdown("### 🔒 Vehicle Report Importer")
-    v = st.text_input("รหัสผ่าน", type="password")
-    if v:
-        if v == _pw:
-            st.session_state["auth_ok"] = True
-            st.rerun()
+# ----------------------------------------------------------------------------- login
+import hashlib, hmac, base64, secrets as _secrets
+
+PBKDF2_ITER = 200_000
+
+
+def hash_password(pw, salt=None, iterations=PBKDF2_ITER):
+    salt = salt or _secrets.token_bytes(16)
+    dk = hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"), salt, iterations)
+    return "pbkdf2_sha256${}${}${}".format(iterations, base64.b64encode(salt).decode(), base64.b64encode(dk).decode())
+
+
+def verify_password(pw, stored):
+    try:
+        algo, it, salt_b64, hash_b64 = str(stored).split("$")
+        if algo != "pbkdf2_sha256":
+            return False
+        dk = hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"), base64.b64decode(salt_b64), int(it))
+        return hmac.compare_digest(dk, base64.b64decode(hash_b64))
+    except Exception:
+        return False
+
+
+def _users():
+    """[users] ใน Secrets: ชื่อผู้ใช้ = "pbkdf2_sha256$..." (สร้างจากหน้าตั้งค่าในแอป)"""
+    try:
+        u = st.secrets.get("users", {})
+        return {str(k).strip().lower(): str(v) for k, v in dict(u).items()}
+    except Exception:
+        return {}
+
+
+def _setup_screen():
+    st.markdown("### 🔐 ตั้งค่าผู้ใช้ครั้งแรก")
+    st.info("แอปนี้ยังไม่ได้ตั้งค่าผู้ใช้ จึงยังเปิดใช้งานไม่ได้ (ป้องกันคนนอกเข้าใช้)")
+    st.markdown("**1) สร้างบรรทัดผู้ใช้** — กรอกชื่อผู้ใช้และรหัสผ่านที่ต้องการ แล้วกดสร้าง "
+                "(รหัสผ่านไม่ถูกบันทึกที่ใดในแอป จะได้เป็น hash เท่านั้น)")
+    with st.form("mk_user", clear_on_submit=True):
+        u = st.text_input("ชื่อผู้ใช้ (ภาษาอังกฤษ/ตัวเลข)")
+        p1 = st.text_input("รหัสผ่าน (อย่างน้อย 8 ตัว)", type="password")
+        p2 = st.text_input("ยืนยันรหัสผ่าน", type="password")
+        ok = st.form_submit_button("สร้างบรรทัดสำหรับ Secrets")
+    if ok:
+        import re as _re
+        if not _re.fullmatch(r"[A-Za-z0-9_.-]{2,30}", u or ""):
+            st.error("ชื่อผู้ใช้ใช้ได้เฉพาะ A-Z a-z 0-9 _ . - ยาว 2–30 ตัว")
+        elif len(p1 or "") < 8:
+            st.error("รหัสผ่านต้องยาวอย่างน้อย 8 ตัว")
+        elif p1 != p2:
+            st.error("รหัสผ่านทั้งสองช่องไม่ตรงกัน")
         else:
-            st.error("รหัสผ่านไม่ถูกต้อง")
+            st.code(f'[users]\n{u.lower()} = "{hash_password(p1)}"', language="toml")
+            st.caption("เพิ่มผู้ใช้หลายคน: สร้างทีละคน แล้ววางเฉพาะบรรทัดชื่อผู้ใช้ไว้ใต้ [users] บรรทัดเดียวกัน")
+    st.markdown("**2) วางใน Secrets** — Streamlit Cloud: *Manage app → Settings → Secrets* → วางข้อความ → Save "
+                "(บนเครื่อง: ไฟล์ `.streamlit/secrets.toml`) แล้วรีเฟรชหน้านี้")
     st.stop()
+
+
+def require_login():
+    ss_ = st.session_state
+    if ss_.get("auth_user"):
+        return ss_["auth_user"]
+    users = _users()
+    legacy_pw = _secret("app_password")
+    if not users and not legacy_pw:
+        if IS_LOCAL:
+            return None          # เครื่องตัวเองไม่ได้ตั้งผู้ใช้ = ไม่ต้อง login
+        _setup_screen()
+    st.markdown('<div style="max-width:420px;margin:6vh auto 0 auto">', unsafe_allow_html=True)
+    st.markdown("## 🚛 Vehicle Report Importer")
+    st.caption("สปีด อินเตอร์ ทรานสปอร์ต · กรุณาเข้าสู่ระบบ")
+    wait = ss_.get("login_block_until", 0) - time.time()
+    if wait > 0:
+        st.error(f"ใส่รหัสผิดหลายครั้ง กรุณารอ {int(wait) + 1} วินาที แล้วรีเฟรช")
+        st.stop()
+    with st.form("login"):
+        u = st.text_input("ชื่อผู้ใช้") if users else ""
+        p = st.text_input("รหัสผ่าน", type="password")
+        go = st.form_submit_button("เข้าสู่ระบบ", type="primary")
+    if go:
+        name = (u or "").strip().lower()
+        ok = verify_password(p, users[name]) if users and name in users else False
+        if not users and legacy_pw:
+            ok, name = hmac.compare_digest(p.encode(), str(legacy_pw).encode()), "user"
+        if ok:
+            ss_["auth_user"] = name
+            ss_["login_fail"] = 0
+            st.rerun()
+        ss_["login_fail"] = ss_.get("login_fail", 0) + 1
+        if ss_["login_fail"] >= 5:
+            ss_["login_block_until"] = time.time() + 60
+            ss_["login_fail"] = 0
+        st.error("ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง")
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.stop()
+
+
+CURRENT_USER = require_login()
 
 # ----------------------------------------------------------------------------- style
 st.markdown("""
@@ -215,6 +301,13 @@ ss.setdefault("export_blob", None)
 with st.sidebar:
     st.markdown("### 🚛 Vehicle Report Importer")
     st.caption(f"Web v{WEB_VERSION} · engine v{core.APP_VERSION}")
+    if CURRENT_USER:
+        c1, c2 = st.columns([3, 2])
+        c1.markdown(f"👤 **{CURRENT_USER}**")
+        if c2.button("ออกจากระบบ", key="logout", **FULL):
+            for k_ in list(st.session_state.keys()):
+                del st.session_state[k_]
+            st.rerun()
 
     uploads = None
     if IS_LOCAL:

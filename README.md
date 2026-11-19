@@ -22,11 +22,20 @@ Streamlit web app สำหรับอ่านรายงาน Crystal Repor
 ## Deploy บน Streamlit Community Cloud
 1. ไปที่ https://share.streamlit.io → Sign in with GitHub
 2. **Create app** → เลือก repo นี้, branch `main`, Main file `vehicle_report_web.py`
-3. (แนะนำ) Advanced settings → Secrets ใส่รหัสผ่านชั้นที่ 2:
+3. Deploy แล้วเปิดแอป จะเจอหน้า **ตั้งค่าผู้ใช้ครั้งแรก** → กรอกชื่อผู้ใช้/รหัสผ่าน → กดสร้าง → คัดลอกข้อความที่ได้
+   แล้ววางที่ *Manage app → Settings → Secrets* (รูปแบบด้านล่าง) → Save → รีเฟรช
    ```toml
-   app_password = "ตั้งรหัสผ่านเอง"
+   [users]
+   oo = "pbkdf2_sha256$200000$...."
+   staff1 = "pbkdf2_sha256$200000$...."
    ```
+   รหัสผ่านเก็บเป็น hash (PBKDF2-SHA256) เท่านั้น — ห้ามใส่ Secrets ลงใน repo
 4. Deploy → เมื่อแอปขึ้นแล้ว ไปที่ **Settings → Sharing** ตรวจว่าเป็น *Only specific people can view this app* แล้วเพิ่มอีเมลผู้ใช้
+
+## Login
+- บน Cloud ต้อง login ทุกครั้ง (ถ้ายังไม่ตั้ง `[users]` แอปจะเปิดใช้งานไม่ได้)
+- ใส่รหัสผิด 5 ครั้ง → รอ 60 วินาที
+- รันบนเครื่อง Windows ไม่ต้อง login ยกเว้นสร้าง `.streamlit/secrets.toml` ที่มี `[users]`
 
 ## รันในเครื่อง
 ```
