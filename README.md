@@ -3,8 +3,8 @@
 Streamlit web app สำหรับอ่านรายงาน Crystal Reports "Finish Goods Takeoff and Work Order Report by Vehicle"
 (`rpt_SumWO_Date.rpt`) รายคัน (.xls / .xlsx) → กระทบยอด → ติด Confirm Flag → Export Excel
 
-> **ห้าม commit ข้อมูลจริง** (ไฟล์รายงาน, Excel ที่ export, ฐานข้อมูล) — `.gitignore` กันไว้แล้ว
-> Repo นี้ต้องเป็น **Private** และแอปบน Streamlit Community Cloud ต้องตั้งเป็น **Private** (เชิญเฉพาะอีเมลที่อนุญาต)
+> **Repo นี้เป็น Public — เก็บเฉพาะโค้ด ห้าม commit ข้อมูลจริง** (ไฟล์รายงาน, Excel ที่ export, ฐานข้อมูล, รหัสผ่าน) — `.gitignore` กันไฟล์ .xls/.xlsx/.zip/.csv/.sqlite และ secrets ไว้แล้ว
+> ถ้า deploy บน Streamlit Community Cloud ให้ตั้งแอปเป็น **Private** (เชิญเฉพาะอีเมลที่อนุญาต) เพราะผู้ใช้จะอัปโหลดข้อมูลจริงเข้าแอป
 
 ## ไฟล์
 | ไฟล์ | หน้าที่ |
