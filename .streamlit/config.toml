@@ -2,6 +2,7 @@
 gatherUsageStats = false
 
 [server]
+fileWatcherType = "none"
 maxUploadSize = 200
 
 [theme]
