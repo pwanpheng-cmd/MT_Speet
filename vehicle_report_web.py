@@ -18,7 +18,7 @@ import streamlit as st
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vehicle_report_app as core  # noqa: E402
 
-WEB_VERSION = "1.4.0"
+WEB_VERSION = "1.5.0"
 import inspect as _inspect
 # ใช้ได้ทั้ง Streamlit รุ่นใหม่ (width="stretch") และรุ่นเก่า (**FULL)
 FULL = ({"width": "stretch"} if "width" in _inspect.signature(st.button).parameters
@@ -289,6 +289,26 @@ def style_rows(key, df):
     return sty
 
 
+# ----------------------------------------------------------------------------- navigation
+PAGES = ["🚛 รายงานซ่อมรายคัน", "🗂️ ฐานข้อมูลใบแจ้งซ่อม"]
+with st.sidebar:
+    st.markdown("### 🚛 Speed Fleet Maintenance")
+    st.caption(f"Web v{WEB_VERSION} · report engine v{core.APP_VERSION}")
+    if CURRENT_USER:
+        c1, c2 = st.columns([3, 2])
+        c1.markdown(f"👤 **{CURRENT_USER}**")
+        if c2.button("ออกจากระบบ", key="logout", **FULL):
+            for k_ in list(st.session_state.keys()):
+                del st.session_state[k_]
+            st.rerun()
+    PAGE = st.radio("เมนู", PAGES, key="page", label_visibility="collapsed")
+    st.divider()
+
+if PAGE == PAGES[1]:
+    import repair_request_page
+    repair_request_page.render(IS_LOCAL, CURRENT_USER, FULL, os.path.dirname(os.path.abspath(__file__)), kpi)
+    st.stop()
+
 # ----------------------------------------------------------------------------- state
 ss = st.session_state
 ss.setdefault("src", core.DEFAULT_SRC)
@@ -299,15 +319,7 @@ ss.setdefault("export_blob", None)
 
 # ----------------------------------------------------------------------------- sidebar
 with st.sidebar:
-    st.markdown("### 🚛 Vehicle Report Importer")
-    st.caption(f"Web v{WEB_VERSION} · engine v{core.APP_VERSION}")
-    if CURRENT_USER:
-        c1, c2 = st.columns([3, 2])
-        c1.markdown(f"👤 **{CURRENT_USER}**")
-        if c2.button("ออกจากระบบ", key="logout", **FULL):
-            for k_ in list(st.session_state.keys()):
-                del st.session_state[k_]
-            st.rerun()
+
 
     uploads = None
     if IS_LOCAL:

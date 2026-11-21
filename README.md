@@ -6,9 +6,17 @@ Streamlit web app สำหรับอ่านรายงาน Crystal Repor
 > **Repo นี้เป็น Public — เก็บเฉพาะโค้ด ห้าม commit ข้อมูลจริง** (ไฟล์รายงาน, Excel ที่ export, ฐานข้อมูล, รหัสผ่าน) — `.gitignore` กันไฟล์ .xls/.xlsx/.zip/.csv/.sqlite และ secrets ไว้แล้ว
 > ถ้า deploy บน Streamlit Community Cloud ให้ตั้งแอปเป็น **Private** (เชิญเฉพาะอีเมลที่อนุญาต) เพราะผู้ใช้จะอัปโหลดข้อมูลจริงเข้าแอป
 
+## หน้าในแอป
+1. **รายงานซ่อมรายคัน** — อ่าน Crystal Report รายคัน → กระทบยอด → Export Excel
+2. **ฐานข้อมูลใบแจ้งซ่อม** — นำเข้าใบแจ้งซ่อม หัวลาก/หางพ่วง/ตู้เย็น (ชีต M1/M2/M3 หรือ หัวลาก/หางพ่วง/ตู้เย็น) เข้า SQLite
+   กันซ้ำด้วยเลขที่เอกสาร, ตรวจก่อนบันทึก, backup อัตโนมัติ, แถวข้อมูลไม่สอดคล้อง → แท็บ "รอตรวจ" ให้ DATA_OWNER ตัดสิน,
+   KPI คัน/เดือน (บนเครื่อง: บันทึกที่ `data/Repair_Request_v2.sqlite` ; บน Cloud: ฐานชั่วคราวเฉพาะ session)
+
 ## ไฟล์
 | ไฟล์ | หน้าที่ |
 |---|---|
+| `repair_request_db.py` | engine ฐานข้อมูลใบแจ้งซ่อม (schema v0.2.1, กันซ้ำ, review, backup) |
+| `repair_request_page.py` | หน้า "ฐานข้อมูลใบแจ้งซ่อม" |
 | `vehicle_report_web.py` | หน้าเว็บ (Main file สำหรับ Streamlit Cloud) |
 | `vehicle_report_app.py` | ตัวอ่านรายงาน, กระทบยอด, เลขไมล์, Export Excel (+ GUI Tkinter เมื่อรันบน Windows) |
 | `requirements.txt` | ไลบรารีที่ใช้ |
