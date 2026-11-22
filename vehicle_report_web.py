@@ -18,7 +18,7 @@ import streamlit as st
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vehicle_report_app as core  # noqa: E402
 
-WEB_VERSION = "1.6.3"
+WEB_VERSION = "1.7.0"
 import inspect as _inspect
 # ใช้ได้ทั้ง Streamlit รุ่นใหม่ (width="stretch") และรุ่นเก่า (**FULL)
 FULL = ({"width": "stretch"} if "width" in _inspect.signature(st.button).parameters
@@ -310,7 +310,7 @@ def style_rows(key, df):
 
 
 # ----------------------------------------------------------------------------- navigation
-PAGES = ["🚛 รายงานซ่อมรายคัน", "🗂️ ฐานข้อมูลใบแจ้งซ่อม", "📏 เลขไมล์", "📖 คู่มือการใช้งาน"]
+PAGES = ["🚛 รายงานซ่อมรายคัน", "🗂️ ฐานข้อมูลใบแจ้งซ่อม", "📏 เลขไมล์", "🛠️ PM Plan รายเดือน", "📖 คู่มือการใช้งาน"]
 with st.sidebar:
     st.markdown("### 🚛 Speed Fleet Maintenance")
     st.caption(f"Web v{WEB_VERSION} · report engine v{core.APP_VERSION}")
@@ -325,7 +325,7 @@ with st.sidebar:
     st.link_button("📖 เปิดคู่มือ (แท็บใหม่)", MANUAL_URL, **FULL)
     st.divider()
 
-if PAGE == PAGES[3]:
+if PAGE == PAGES[4]:
     st.markdown('<div class="app-hero"><h1>📖 คู่มือการใช้งาน</h1><p>วิธีใช้ทั้ง 3 หน้า · Export M1/M2/M3 · เลขไมล์ · สำรอง/กู้คืน · แก้ปัญหา</p></div>',
                 unsafe_allow_html=True)
     if os.path.exists(MANUAL_PATH):
@@ -342,6 +342,11 @@ if PAGE == PAGES[3]:
             _components.html(_html, height=1400, scrolling=True)
     else:
         st.error(f"ไม่พบไฟล์คู่มือ: {MANUAL_PATH}")
+    st.stop()
+
+if PAGE == PAGES[3]:
+    import pm_plan_page
+    pm_plan_page.render_pm(IS_LOCAL, CURRENT_USER, FULL, os.path.dirname(os.path.abspath(__file__)), kpi)
     st.stop()
 
 if PAGE in PAGES[1:3]:
