@@ -108,7 +108,7 @@ def db_selector(is_local, app_dir, full):
                 st.download_button("ดาวน์โหลดฐานข้อมูล (บันทึกกลับเครื่อง)", fh.read(), file_name=ss["rr_db_name"],
                                    icon="⬇️", type="primary" if changed else "secondary", key="rr_db_dl", **full)
         else:
-            st.info("ยังไม่ได้เลือกไฟล์ — Browse ไฟล์ Repair_Request_v2.sqlite จากเครื่อง (เช่น D:\\MT_Speet\\data) "
+            st.info("ยังไม่ได้เลือกไฟล์ — Browse ไฟล์ Repair_Request_v2.sqlite จากเครื่อง (เช่น D:\\MT_Speed\\data) "
                     "หรือใช้ฐานว่างชั่วคราวเพื่อตรวจไฟล์")
             if os.path.exists(db):
                 with open(db, "rb") as fh:

@@ -27,7 +27,7 @@ Streamlit web app สำหรับอ่านรายงาน Crystal Repor
 ## โหมดการทำงาน
 - **Cloud (Linux):** อัปโหลดไฟล์ .xls/.xlsx หลายไฟล์ หรือ .zip ทั้งโฟลเดอร์ → ไฟล์ถูกอ่านในโฟลเดอร์ชั่วคราวแล้วลบทันที →
   Export เป็นไฟล์ดาวน์โหลด (ไม่บันทึกบนเซิร์ฟเวอร์)
-- **เครื่อง Windows:** เลือกโฟลเดอร์ในเครื่อง (เช่น `D:\Vehicle_Reports`) และบันทึก Excel ลงโฟลเดอร์ (เช่น `D:\MT_Speet`) หรือใช้โหมดอัปโหลดก็ได้
+- **เครื่อง Windows:** เลือกโฟลเดอร์ในเครื่อง (เช่น `D:\Vehicle_Reports`) และบันทึก Excel ลงโฟลเดอร์ (เช่น `D:\MT_Speed`) หรือใช้โหมดอัปโหลดก็ได้
 
 ## Deploy บน Streamlit Community Cloud
 1. ไปที่ https://share.streamlit.io → Sign in with GitHub
@@ -54,7 +54,7 @@ py -m streamlit run vehicle_report_web.py --server.address localhost
 ```
 
 ## v1.9.x — โครงสร้างบนเครื่อง และข้อมูลเฉพาะบริษัท
-- บนเครื่อง (`D:\MT_Speet`) ไฟล์ .py อยู่ในโฟลเดอร์ `Scrips\` — `Run_Vehicle_Report_Web.bat` เรียก `Scrips\vehicle_report_web.py` ; ใน repo ไฟล์อยู่ที่ root (Streamlit Cloud main file เดิม) — `APP_ROOT` หา `data/` และ `static/` ให้อัตโนมัติทั้งสองแบบ
+- บนเครื่อง (`D:\MT_Speed`) ไฟล์ .py อยู่ในโฟลเดอร์ `Scrips\` — `Run_Vehicle_Report_Web.bat` เรียก `Scrips\vehicle_report_web.py` ; ใน repo ไฟล์อยู่ที่ root (Streamlit Cloud main file เดิม) — `APP_ROOT` หา `data/` และ `static/` ให้อัตโนมัติทั้งสองแบบ
 - หน้าเพิ่ม: 📋 รายการอุปกรณ์ (asset master) · 🖨️ พิมพ์รายงานประจำเดือน (`monthly_report.py`, `monthly_report_page.py`)
 - **ข้อมูลเฉพาะบริษัทไม่อยู่ในโค้ด**: แผน KPI รายเดือน, %Achieve ปีก่อน, หมายเหตุ Last PM รายคัน → `data/local_settings.json` บนเครื่อง (ไม่ขึ้น GitHub) ; ไม่มีไฟล์ = แผน 0 / ว่าง (เช่นบน Cloud)
   ```json

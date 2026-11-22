@@ -520,11 +520,11 @@ def compute_yearly_kpi(db_path, year=None):
         con.close()
 
 
-DEFAULT_EXPORT_DIR = r"D:\MT_Speet\Export_File"
+DEFAULT_EXPORT_DIR = r"D:\MT_Speed\Export_File"
 
 
 def get_export_dir(app_dir=None):
-    """คืนโฟลเดอร์เก็บไฟล์ Export (ค่าเริ่มต้น <app_dir>/Export_File เช่น D:\\MT_Speet\\Export_File)"""
+    """คืนโฟลเดอร์เก็บไฟล์ Export (ค่าเริ่มต้น <app_dir>/Export_File เช่น D:\\MT_Speed\\Export_File)"""
     if app_dir:
         return os.path.join(app_dir, "Export_File")
     return DEFAULT_EXPORT_DIR
