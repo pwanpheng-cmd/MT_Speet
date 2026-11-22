@@ -18,7 +18,7 @@ import streamlit as st
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vehicle_report_app as core  # noqa: E402
 
-WEB_VERSION = "1.6.2"
+WEB_VERSION = "1.6.3"
 import inspect as _inspect
 # ใช้ได้ทั้ง Streamlit รุ่นใหม่ (width="stretch") และรุ่นเก่า (**FULL)
 FULL = ({"width": "stretch"} if "width" in _inspect.signature(st.button).parameters

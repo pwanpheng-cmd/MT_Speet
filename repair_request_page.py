@@ -146,6 +146,61 @@ def _excel_bytes(sheets):
     return buf.getvalue()
 
 
+KPI_DETAIL_SHEETS = [("หัวลาก", "M1_ซ่อมรถ"), ("หางพ่วง", "M2_ซ่อมหาง"), ("ตู้เย็น", "M3_ซ่อมตู้")]
+KPI_DETAIL_COLS = [("doc_no", "เลขที่เอกสาร", 18), ("open_date", "วันที่เปิดเอกสาร", 14), ("report_date", "วันที่แจ้งซ่อม", 14),
+                   ("report_time", "เวลา", 8), ("report_time_raw", "เวลา (ต้นฉบับ)", 12), ("asset_raw", "ทะเบียน / เบอร์ตู้", 34),
+                   ("asset_code", "ทะเบียน/เบอร์ตู้ (รหัส)", 18), ("brand", "ยี่ห้อ", 12), ("employee_code", "รหัสพนักงาน", 13),
+                   ("status", "สถานะซ่อม", 11), ("report_month", "เดือน", 9), ("data_note", "หมายเหตุข้อมูล", 30)]
+
+
+def _kpi_export_bytes(db, pv, pr):
+    """Export KPI + รายละเอียดใบแจ้งซ่อม M1/M2/M3 แยกชีต (วันที่เป็นวันที่จริง รูปแบบ DD/MM/YYYY)"""
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+    counts = {}
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as xw:
+        tot_v = pv.copy(); tot_r = pr.copy()
+        for df_, name in ((tot_v, "คันต่อเดือน"), (tot_r, "ใบแจ้งซ่อมต่อเดือน")):
+            out = df_.rename_axis("เดือน").reset_index()
+            out["รวม"] = out[TYPES].sum(axis=1)
+            if name == "ใบแจ้งซ่อมต่อเดือน":
+                out.loc[len(out)] = ["รวม"] + [int(out[c].sum()) for c in TYPES + ["รวม"]]
+            out.to_excel(xw, sheet_name=name, index=False)
+        for t, sheet in KPI_DETAIL_SHEETS:
+            rows = rr.fetch(db, "SELECT * FROM repair_request WHERE asset_type=? ORDER BY report_date, doc_no", t)
+            df = pd.DataFrame(rows, columns=[c for c, _, _ in KPI_DETAIL_COLS]) if not rows else \
+                pd.DataFrame(rows)[[c for c, _, _ in KPI_DETAIL_COLS]]
+            for c in ("open_date", "report_date"):
+                df[c] = pd.to_datetime(df[c], errors="coerce")
+            df.columns = [h for _, h, _ in KPI_DETAIL_COLS]
+            df.to_excel(xw, sheet_name=sheet, index=False)
+            counts[sheet] = len(df)
+        note = pd.DataFrame({"รายการ": ["สร้างเมื่อ", "ไฟล์ฐานข้อมูล", "คันต่อเดือน", "ใบแจ้งซ่อมต่อเดือน"] + [s_ for _, s_ in KPI_DETAIL_SHEETS] + ["หมายเหตุ"],
+                             "รายละเอียด": [datetime.now().strftime("%d/%m/%Y %H:%M"), os.path.basename(db),
+                                            "จำนวนคัน/ตู้ไม่ซ้ำต่อเดือน (ตามวันที่แจ้งซ่อม ทุกสถานะ)", "จำนวนใบแจ้งซ่อมต่อเดือน"]
+                                           + [f"รายละเอียดใบแจ้งซ่อม{t} {counts[s_]:,} แถว" for t, s_ in KPI_DETAIL_SHEETS]
+                                           + ["ไม่รวมรายการที่ยังรอตรวจ"]})
+        note.to_excel(xw, sheet_name="ข้อมูลการ Export", index=False)
+        hdr_fill = PatternFill("solid", fgColor="DCE9F5")
+        for ws in xw.book.worksheets:
+            ws.freeze_panes = "A2"
+            for cell in ws[1]:
+                cell.font = Font(bold=True); cell.fill = hdr_fill; cell.alignment = Alignment(horizontal="center", vertical="center")
+            if ws.title in dict((s_, 1) for _, s_ in KPI_DETAIL_SHEETS):
+                for i, (_, _, wdt) in enumerate(KPI_DETAIL_COLS, 1):
+                    ws.column_dimensions[get_column_letter(i)].width = wdt
+                for col in ("B", "C"):
+                    for cell in ws[col][1:]:
+                        cell.number_format = "dd/mm/yyyy"
+                if ws.max_row > 1:
+                    ws.auto_filter.ref = ws.dimensions
+            else:
+                for i in range(1, ws.max_column + 1):
+                    ws.column_dimensions[get_column_letter(i)].width = 22 if ws.title != "ข้อมูลการ Export" else (24 if i == 1 else 60)
+    return buf.getvalue(), counts
+
+
 def render(is_local, user, full, app_dir, kpi_card):
     ss = st.session_state
     db = db_selector(is_local, app_dir, full)
@@ -305,8 +360,17 @@ def render(is_local, user, full, app_dir, kpi_card):
             c1.caption("คัน/ตู้ (ไม่ซ้ำ)"); c1.dataframe(pv.rename_axis("เดือน").reset_index(), hide_index=True, **full)
             c2.caption("จำนวนใบแจ้งซ่อม"); c2.dataframe(pr.rename_axis("เดือน").reset_index(), hide_index=True, **full)
             st.bar_chart(pv, height=300, stack=False)
-            st.download_button("Export KPI (Excel)", _excel_bytes({"คันต่อเดือน": pv.reset_index(), "ใบแจ้งซ่อมต่อเดือน": pr.reset_index()}),
-                               file_name=f"KPI_ใบแจ้งซ่อม_{datetime.now():%Y%m%d_%H%M}.xlsx", icon="⬇️")
+            with st.container(border=True):
+                st.markdown("**Export KPI (Excel)** — ชีต คันต่อเดือน · ใบแจ้งซ่อมต่อเดือน + รายละเอียดการซ่อม **M1_ซ่อมรถ · M2_ซ่อมหาง · M3_ซ่อมตู้** แยกชีต")
+                if st.button("สร้างไฟล์ Export KPI", icon="📊", key="rr_kpi_exp"):
+                    with st.spinner("กำลังสร้างไฟล์…"):
+                        blob, cnt = _kpi_export_bytes(db, pv, pr)
+                    ss["rr_kpi_blob"] = (f"KPI_ใบแจ้งซ่อม_{datetime.now():%Y%m%d_%H%M}.xlsx", blob, cnt)
+                if ss.get("rr_kpi_blob"):
+                    n, blob, cnt = ss["rr_kpi_blob"]
+                    st.caption(" · ".join(f"{k_} {v:,} แถว" for k_, v in cnt.items()))
+                    st.download_button(f"ดาวน์โหลด {n}", blob, file_name=n, icon="⬇️", type="primary", key="rr_kpi_dl",
+                                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
     # ------------------------------------------------------------------ review
     with t_rev:
