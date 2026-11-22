@@ -628,6 +628,18 @@ def _strip_pivot_bloat_bytes(raw_bytes):
                     for el in list(root):
                         if el.tag.endswith("}" + tag) or el.tag == tag:
                             root.remove(el)
+                # ล้าง Named Ranges ขยะ/เสีย (#REF!, [0]!, [1]!, Macro เก่า) ที่ทำให้ Excel แจ้ง repair log
+                for el in list(root):
+                    if el.tag.endswith("}definedNames") or el.tag == "definedNames":
+                        for dn in list(el):
+                            nm = dn.attrib.get("name", "")
+                            txt = (dn.text or "").strip()
+                            is_print = nm in ("_xlnm.Print_Area", "_xlnm.Print_Titles")
+                            is_bad = ("#REF!" in txt) or ("[" in txt and "]" in txt) or (not is_print)
+                            if is_bad:
+                                el.remove(dn)
+                        if len(el) == 0:
+                            root.remove(el)
                 data = ET.tostring(root, encoding="utf-8", xml_declaration=True)
             elif fn.endswith(".rels"):
                 ET.register_namespace("", "http://schemas.openxmlformats.org/package/2006/relationships")
@@ -682,6 +694,12 @@ def _build_iso_kpi_workbook(
     for sname in list(wb.sheetnames):
         if sname not in keep_sheets:
             del wb[sname]
+    # ล้าง workbook-level & sheet-level defined_names ขยะ (openpyxl จะสร้าง Print_Area/Print_Titles ใหม่ให้ถูกต้องตอน save)
+    wb.defined_names.clear()
+    for ws_tmp in wb.worksheets:
+        ws_tmp.defined_names.clear()
+        if not ws_tmp.print_area:
+            ws_tmp.print_area = "A1:AP37"
 
     yearly = compute_yearly_kpi(db_path, year=year_str)
     by_month = {int(r["report_month"].split("-")[1]): r for r in yearly if int(r["report_month"].split("-")[1]) <= max_m}
@@ -700,9 +718,15 @@ def _build_iso_kpi_workbook(
 
         ws["D5"] = year_int
         ws["AD16"] = year_int
+        yy_cur = f"{year_int % 100:02d}"
+        yy_prev = f"{(year_int - 1) % 100:02d}"
+        ws["J8"] = f"Ave. '{yy_prev}"
+        ws["K8"] = f"Target '{yy_cur}"
+        ws["L8"] = f"Actual '{yy_cur}"
         ws["K9"] = f">{target_pct}%"
         if year_int == 2026 and (ws["J9"].value in (None, "", " -", "-")):
             ws["J9"] = DEFAULT_AVE_PREV.get(at)
+            ws["J9"].number_format = "0.00"
         if meta.get("issued_by"):
             ws["J4"] = meta["issued_by"]
         if meta.get("reviewed_by"):
@@ -749,6 +773,7 @@ def _build_iso_kpi_workbook(
         ws["AP15"] = '=IFERROR(AP11*100/AP12,0)'
         ws["L9"] = "=AP15"
         ws["L9"].number_format = "0.00"
+        wb.calculation.fullCalcOnLoad = True
         summary[at] = dict(
             months=filled_months,
             actual=tot_actual,

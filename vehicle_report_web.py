@@ -24,7 +24,7 @@ APP_ROOT = (
 sys.path.insert(0, SCRIPT_DIR)
 import vehicle_report_app as core  # noqa: E402
 
-WEB_VERSION = "1.9.3"
+WEB_VERSION = "1.9.4"
 import inspect as _inspect
 # ใช้ได้ทั้ง Streamlit รุ่นใหม่ (width="stretch") และรุ่นเก่า (**FULL)
 FULL = ({"width": "stretch"} if "width" in _inspect.signature(st.button).parameters
