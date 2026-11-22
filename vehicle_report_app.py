@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, date
 warnings.filterwarnings("ignore")
 APP_VERSION = "1.1.0"
 DEFAULT_SRC = r"D:\Vehicle_Reports"
-DEFAULT_OUT = r"D:\MT_Speet"
+DEFAULT_OUT = r"D:\MT_Speet\Export_File"
 
 # ----------------------------------------------------------------------------- parser
 def _load_rows(path):

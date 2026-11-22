@@ -21,9 +21,9 @@ def _df(rows, cols=None):
 COLS_TH = {"doc_no": "เลขที่เอกสาร", "asset_type": "ประเภท", "report_date": "วันที่แจ้งซ่อม", "report_time": "เวลา",
            "report_time_raw": "เวลา (ต้นฉบับ)", "open_date": "วันที่เปิดเอกสาร", "asset_code": "ทะเบียน/เบอร์ตู้",
            "asset_raw": "ทะเบียน/เบอร์ตู้ (ต้นฉบับ)", "brand": "ยี่ห้อ", "employee_code": "รหัสพนักงาน",
-           "status": "สถานะซ่อม", "report_month": "เดือน", "source_sheet": "ชีตต้นทาง", "source_row": "แถวต้นทาง",
+           "status": "สถานะซ่อม", "in_iso": "ใน ISO", "report_month": "เดือน", "source_sheet": "ชีตต้นทาง", "source_row": "แถวต้นทาง",
            "data_note": "หมายเหตุข้อมูล", "flag_reason": "เหตุผล", "confirm_flag": "Confirm Flag"}
-SHOW = ["doc_no", "asset_type", "report_date", "report_time", "asset_code", "brand", "status", "employee_code",
+SHOW = ["doc_no", "asset_type", "report_date", "report_time", "asset_code", "in_iso", "brand", "status", "employee_code",
         "open_date", "data_note", "source_sheet", "source_row"]
 
 
@@ -149,7 +149,7 @@ def _excel_bytes(sheets):
 KPI_DETAIL_SHEETS = [("หัวลาก", "M1_ซ่อมรถ"), ("หางพ่วง", "M2_ซ่อมหาง"), ("ตู้เย็น", "M3_ซ่อมตู้")]
 KPI_DETAIL_COLS = [("doc_no", "เลขที่เอกสาร", 18), ("open_date", "วันที่เปิดเอกสาร", 14), ("report_date", "วันที่แจ้งซ่อม", 14),
                    ("report_time", "เวลา", 8), ("report_time_raw", "เวลา (ต้นฉบับ)", 12), ("asset_raw", "ทะเบียน / เบอร์ตู้", 34),
-                   ("asset_code", "ทะเบียน/เบอร์ตู้ (รหัส)", 18), ("brand", "ยี่ห้อ", 12), ("employee_code", "รหัสพนักงาน", 13),
+                   ("asset_code", "ทะเบียน/เบอร์ตู้ (รหัส)", 18), ("in_iso", "ใน ISO", 9), ("brand", "ยี่ห้อ", 12), ("employee_code", "รหัสพนักงาน", 13),
                    ("status", "สถานะซ่อม", 11), ("report_month", "เดือน", 9), ("data_note", "หมายเหตุข้อมูล", 30)]
 
 
@@ -168,7 +168,7 @@ def _kpi_export_bytes(db, pv, pr):
                 out.loc[len(out)] = ["รวม"] + [int(out[c].sum()) for c in TYPES + ["รวม"]]
             out.to_excel(xw, sheet_name=name, index=False)
         for t, sheet in KPI_DETAIL_SHEETS:
-            rows = rr.fetch(db, "SELECT * FROM repair_request WHERE asset_type=? ORDER BY report_date, doc_no", t)
+            rows = rr.fetch(db, "SELECT * FROM repair_request WHERE asset_type=? AND in_iso='Yes' ORDER BY report_date, doc_no", t)
             df = pd.DataFrame(rows, columns=[c for c, _, _ in KPI_DETAIL_COLS]) if not rows else \
                 pd.DataFrame(rows)[[c for c, _, _ in KPI_DETAIL_COLS]]
             for c in ("open_date", "report_date"):
@@ -178,9 +178,9 @@ def _kpi_export_bytes(db, pv, pr):
             counts[sheet] = len(df)
         note = pd.DataFrame({"รายการ": ["สร้างเมื่อ", "ไฟล์ฐานข้อมูล", "คันต่อเดือน", "ใบแจ้งซ่อมต่อเดือน"] + [s_ for _, s_ in KPI_DETAIL_SHEETS] + ["หมายเหตุ"],
                              "รายละเอียด": [datetime.now().strftime("%d/%m/%Y %H:%M"), os.path.basename(db),
-                                            "จำนวนคัน/ตู้ไม่ซ้ำต่อเดือน (ตามวันที่แจ้งซ่อม ทุกสถานะ)", "จำนวนใบแจ้งซ่อมต่อเดือน"]
-                                           + [f"รายละเอียดใบแจ้งซ่อม{t} {counts[s_]:,} แถว" for t, s_ in KPI_DETAIL_SHEETS]
-                                           + ["ไม่รวมรายการที่ยังรอตรวจ"]})
+                                            "จำนวนคัน/ตู้ไม่ซ้ำต่อเดือน (คิดเฉพาะ ISO = Yes · ตามวันที่แจ้งซ่อม ทุกสถานะ)", "จำนวนใบแจ้งซ่อมต่อเดือน (เฉพาะ ISO = Yes)"]
+                                           + [f"รายละเอียดใบแจ้งซ่อม{t} {counts[s_]:,} แถว" + (" (เฉพาะ ISO = Yes)" if t == "หัวลาก" else "") for t, s_ in KPI_DETAIL_SHEETS]
+                                           + ["ไม่รวมรายการที่ยังรอตรวจ · หัวลากไม่รวมรายการที่ ISO = No"]})
         note.to_excel(xw, sheet_name="ข้อมูลการ Export", index=False)
         hdr_fill = PatternFill("solid", fgColor="DCE9F5")
         for ws in xw.book.worksheets:
@@ -318,21 +318,29 @@ def render(is_local, user, full, app_dir, kpi_card):
     with t_data:
         with st.container(border=True):
             st.markdown("**Export สำหรับอัปเดตไฟล์หลัก** — ชีต `M1_ซ่อมรถ / M2_ซ่อมหาง / M3_ซ่อมตู้` รูปแบบเดียวกับไฟล์เดิม "
-                        "(คอลัมน์ B–H ข้อมูล, I–M สูตรเดิม, 1 แถว = 1 เลขเอกสาร) — ไม่รวมรายการรอตรวจ")
+                        "(คอลัมน์ B–H ข้อมูล, I–L สูตรเดิม, คอลัมน์ M `ISO = Yes`) — ไม่รวมรายการรอตรวจ และไม่รวม `ISO = No`")
             if st.button("สร้างไฟล์ M1/M2/M3", icon="📤", key="rr_mexp"):
+                import monthly_report as mr
                 blob, cnt = rr.export_m_sheets(db)
-                ss["rr_mexp_blob"] = (f"อัปเดต_M1_M2_M3_{datetime.now():%Y%m%d_%H%M}.xlsx", blob, cnt)
+                fn_ = f"อัปเดต_M1_M2_M3_{datetime.now():%Y%m%d_%H%M}.xlsx"
+                sp_ = mr.save_local_export(app_dir, fn_, blob, is_local=is_local)
+                ss["rr_mexp_blob"] = (fn_, blob, cnt, sp_)
             if ss.get("rr_mexp_blob"):
-                n, blob, cnt = ss["rr_mexp_blob"]
+                _m = ss["rr_mexp_blob"]
+                n, blob, cnt = _m[0], _m[1], _m[2]
+                sp_ = _m[3] if len(_m) > 3 else None
                 st.caption(" · ".join(f"{k} {v:,} แถว" for k, v in cnt.items()))
+                if sp_:
+                    st.success(f"💾 บันทึกไฟล์แล้วที่: `{sp_}`")
                 st.download_button(f"ดาวน์โหลด {n}", blob, file_name=n, icon="⬇️", type="primary",
                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        c1, c2, c3, c4 = st.columns([1.2, 1.2, 1.6, 1.2])
+        c1, c2, c3, c4, c5 = st.columns([1.1, 1.1, 1.5, 1.1, 0.9])
         ft = c1.multiselect("ประเภท", TYPES, key="rr_ft", placeholder="ทุกประเภท")
         months = [r["m"] for r in rr.fetch(db, "SELECT DISTINCT report_month m FROM repair_request ORDER BY 1")]
         fm = c2.multiselect("เดือน", months, key="rr_fm", placeholder="ทุกเดือน")
         fq = c3.text_input("ค้นหา", key="rr_fq", placeholder="ทะเบียน / เลขเอกสาร / รหัสพนักงาน")
         fs = c4.multiselect("สถานะ", ["Approved", "Open", "Cancel"], key="rr_fs", placeholder="ทุกสถานะ")
+        fiso = c5.selectbox("ใน ISO", ["ทั้งหมด", "Yes", "No"], key="rr_fiso")
         sql, args = "SELECT * FROM repair_request WHERE 1=1", []
         if ft:
             sql += f" AND asset_type IN ({','.join('?' * len(ft))})"; args += ft
@@ -340,19 +348,28 @@ def render(is_local, user, full, app_dir, kpi_card):
             sql += f" AND report_month IN ({','.join('?' * len(fm))})"; args += fm
         if fs:
             sql += f" AND status IN ({','.join('?' * len(fs))})"; args += fs
+        if fiso in ("Yes", "No"):
+            sql += " AND in_iso = ?"; args.append(fiso)
         if fq:
             sql += " AND (doc_no LIKE ? OR asset_code LIKE ? OR IFNULL(employee_code,'') LIKE ?)"; args += [f"%{fq}%"] * 3
         rows = rr.fetch(db, sql + " ORDER BY report_date DESC, doc_no", *args)
         df = _th(_df(rows, SHOW + ["report_month", "report_time_raw", "flag_reason"]))
         st.caption(f"แสดง {len(df):,} รายการ")
         st.dataframe(df, hide_index=True, height=480, **full)
-        st.download_button("Export ข้อมูลที่กรอง (Excel)", _excel_bytes({"ใบแจ้งซ่อม": df}),
+        df_exp = df[df["ใน ISO"] != "No"] if "ใน ISO" in df.columns else df
+        st.download_button(f"Export ข้อมูลที่กรอง (Excel · เฉพาะ ISO = Yes · {len(df_exp):,} แถว)",
+                           _excel_bytes({"ใบแจ้งซ่อม": df_exp}),
                            file_name=f"ใบแจ้งซ่อม_{datetime.now():%Y%m%d_%H%M}.xlsx", icon="⬇️")
 
     # ------------------------------------------------------------------ KPI
     with t_kpi:
-        k = pd.DataFrame(rr.kpi_table(db))
-        st.markdown("**จำนวนคัน/ตู้ที่มีใบแจ้งซ่อมในเดือน** (นับทะเบียนไม่ซ้ำ ตามวันที่แจ้งซ่อม ทุกสถานะ — เทียบเท่าคอลัมน์ Index ในไฟล์ KPI)")
+        k = pd.DataFrame(rr.kpi_table(db, iso_only=True))
+        _iso_no = rr.fetch(db, "SELECT COUNT(*) n, COUNT(DISTINCT asset_code) p FROM repair_request WHERE asset_type='หัวลาก' AND in_iso='No'")
+        _no_n = _iso_no[0]["n"] if _iso_no else 0
+        _no_p = _iso_no[0]["p"] if _iso_no else 0
+        st.markdown("**จำนวนคัน/ตู้ที่มีใบแจ้งซ่อมในเดือน (คิดเฉพาะ `ISO = Yes`)** — นับทะเบียนไม่ซ้ำ ตามวันที่แจ้งซ่อม ทุกสถานะ")
+        if _no_n:
+            st.caption(f"ℹ️ หัวลาก `ISO = Yes` ตรงกับรายการอุปกรณ์ (Active) · ตัดหัวลาก `ISO = No` ออก {_no_n:,} ใบ ({_no_p} ทะเบียน)")
         if len(k):
             pv = k.pivot_table(index="report_month", columns="asset_type", values="vehicles", aggfunc="sum").reindex(columns=TYPES).fillna(0).astype(int)
             pr = k.pivot_table(index="report_month", columns="asset_type", values="requests", aggfunc="sum").reindex(columns=TYPES).fillna(0).astype(int)
@@ -360,15 +377,24 @@ def render(is_local, user, full, app_dir, kpi_card):
             c1.caption("คัน/ตู้ (ไม่ซ้ำ)"); c1.dataframe(pv.rename_axis("เดือน").reset_index(), hide_index=True, **full)
             c2.caption("จำนวนใบแจ้งซ่อม"); c2.dataframe(pr.rename_axis("เดือน").reset_index(), hide_index=True, **full)
             st.bar_chart(pv, height=300, stack=False)
+            import monthly_report_page as mrp
+            mrp.render_iso_kpi_export_box(db, app_dir, full, key_prefix="rr_iso")
             with st.container(border=True):
-                st.markdown("**Export KPI (Excel)** — ชีต คันต่อเดือน · ใบแจ้งซ่อมต่อเดือน + รายละเอียดการซ่อม **M1_ซ่อมรถ · M2_ซ่อมหาง · M3_ซ่อมตู้** แยกชีต")
+                st.markdown("**Export KPI พร้อมรายละเอียด (Excel)** — ชีต คันต่อเดือน · ใบแจ้งซ่อมต่อเดือน + รายละเอียดการซ่อม **M1_ซ่อมรถ (เฉพาะ ISO = Yes) · M2_ซ่อมหาง · M3_ซ่อมตู้** แยกชีต")
                 if st.button("สร้างไฟล์ Export KPI", icon="📊", key="rr_kpi_exp"):
+                    import monthly_report as mr
                     with st.spinner("กำลังสร้างไฟล์…"):
                         blob, cnt = _kpi_export_bytes(db, pv, pr)
-                    ss["rr_kpi_blob"] = (f"KPI_ใบแจ้งซ่อม_{datetime.now():%Y%m%d_%H%M}.xlsx", blob, cnt)
+                    fn_ = f"KPI_ใบแจ้งซ่อม_{datetime.now():%Y%m%d_%H%M}.xlsx"
+                    sp_ = mr.save_local_export(app_dir, fn_, blob, is_local=is_local)
+                    ss["rr_kpi_blob"] = (fn_, blob, cnt, sp_)
                 if ss.get("rr_kpi_blob"):
-                    n, blob, cnt = ss["rr_kpi_blob"]
+                    _k = ss["rr_kpi_blob"]
+                    n, blob, cnt = _k[0], _k[1], _k[2]
+                    sp_ = _k[3] if len(_k) > 3 else None
                     st.caption(" · ".join(f"{k_} {v:,} แถว" for k_, v in cnt.items()))
+                    if sp_:
+                        st.success(f"💾 บันทึกไฟล์แล้วที่: `{sp_}`")
                     st.download_button(f"ดาวน์โหลด {n}", blob, file_name=n, icon="⬇️", type="primary", key="rr_kpi_dl",
                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 

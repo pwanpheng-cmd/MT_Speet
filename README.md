@@ -52,3 +52,12 @@ Streamlit web app สำหรับอ่านรายงาน Crystal Repor
 py -m pip install -r requirements.txt
 py -m streamlit run vehicle_report_web.py --server.address localhost
 ```
+
+## v1.9.x — โครงสร้างบนเครื่อง และข้อมูลเฉพาะบริษัท
+- บนเครื่อง (`D:\MT_Speet`) ไฟล์ .py อยู่ในโฟลเดอร์ `Scrips\` — `Run_Vehicle_Report_Web.bat` เรียก `Scrips\vehicle_report_web.py` ; ใน repo ไฟล์อยู่ที่ root (Streamlit Cloud main file เดิม) — `APP_ROOT` หา `data/` และ `static/` ให้อัตโนมัติทั้งสองแบบ
+- หน้าเพิ่ม: 📋 รายการอุปกรณ์ (asset master) · 🖨️ พิมพ์รายงานประจำเดือน (`monthly_report.py`, `monthly_report_page.py`)
+- **ข้อมูลเฉพาะบริษัทไม่อยู่ในโค้ด**: แผน KPI รายเดือน, %Achieve ปีก่อน, หมายเหตุ Last PM รายคัน → `data/local_settings.json` บนเครื่อง (ไม่ขึ้น GitHub) ; ไม่มีไฟล์ = แผน 0 / ว่าง (เช่นบน Cloud)
+  ```json
+  {"kpi_plans": {"หัวลาก": [12 ค่า], "หางพ่วง": [...], "ตู้เย็น": [...]}, "ave_prev": {"หัวลาก": 85.0}, "last_pm_notes": {"ทะเบียน": "หมายเหตุ"}}
+  ```
+- Template KPI บริษัท: `data/kpi_template_iso.xlsx` (บนเครื่องเท่านั้น)

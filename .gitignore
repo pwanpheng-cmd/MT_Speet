@@ -9,3 +9,9 @@ __pycache__/
 .streamlit/secrets.toml
 ~$*
 data/
+
+# ข้อมูลเฉพาะบริษัท (แผน KPI ฯลฯ) — อยู่บนเครื่องเท่านั้น
+local_settings.json
+*.sqlite
+User_Login.txt
+.streamlit/secrets.toml

@@ -271,9 +271,9 @@ def compute_plan(db_path, today=None, **opt):
     today = today or dt.date.today()
     con = connect(db_path)
     try:
-        plates = {r[0] for r in con.execute("SELECT DISTINCT asset_code FROM repair_request WHERE asset_type='หัวลาก'")}
+        plates = {r[0] for r in con.execute("SELECT DISTINCT asset_code FROM repair_request WHERE asset_type='หัวลาก' AND in_iso='Yes'")}
         plates |= {r[0] for r in con.execute("SELECT DISTINCT asset_code FROM service_doc")}
-        last_rr = {r[0]: r[1] for r in con.execute("SELECT asset_code, MAX(report_date) FROM repair_request WHERE asset_type='หัวลาก' GROUP BY 1")}
+        last_rr = {r[0]: r[1] for r in con.execute("SELECT asset_code, MAX(report_date) FROM repair_request WHERE asset_type='หัวลาก' AND in_iso='Yes' GROUP BY 1")}
         pts = {}
         for a, d, k in con.execute("SELECT asset_code, reading_date, km FROM mileage_reading WHERE km IS NOT NULL"):
             pts.setdefault(a, []).append((_d(d), int(k), "เลขไมล์"))

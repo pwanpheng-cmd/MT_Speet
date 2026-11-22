@@ -15,10 +15,16 @@ if hasattr(time, "tzset"):
 import pandas as pd
 import streamlit as st
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+APP_ROOT = (
+    SCRIPT_DIR
+    if (os.path.isdir(os.path.join(SCRIPT_DIR, "data")) or os.path.isdir(os.path.join(SCRIPT_DIR, "static")))
+    else os.path.dirname(SCRIPT_DIR)
+)
+sys.path.insert(0, SCRIPT_DIR)
 import vehicle_report_app as core  # noqa: E402
 
-WEB_VERSION = "1.7.0"
+WEB_VERSION = "1.9.3"
 import inspect as _inspect
 # ใช้ได้ทั้ง Streamlit รุ่นใหม่ (width="stretch") และรุ่นเก่า (**FULL)
 FULL = ({"width": "stretch"} if "width" in _inspect.signature(st.button).parameters
@@ -96,7 +102,7 @@ def _setup_screen():
 
 
 # ---- standalone manual (opened in a new tab via ?manual=1) — does not need static file serving
-MANUAL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "manual.html")
+MANUAL_PATH = os.path.join(APP_ROOT, "static", "manual.html")
 MANUAL_URL = "./?manual=1"
 if st.query_params.get("manual"):
     st.markdown("<style>header, [data-testid='stSidebar'], [data-testid='stSidebarCollapsedControl'], footer {display:none !important}"
@@ -310,7 +316,7 @@ def style_rows(key, df):
 
 
 # ----------------------------------------------------------------------------- navigation
-PAGES = ["🚛 รายงานซ่อมรายคัน", "🗂️ ฐานข้อมูลใบแจ้งซ่อม", "📏 เลขไมล์", "🛠️ PM Plan รายเดือน", "📖 คู่มือการใช้งาน"]
+PAGES = ["📋 รายการอุปกรณ์", "🚛 รายงานซ่อมรายคัน", "🗂️ ฐานข้อมูลใบแจ้งซ่อม", "🖨️ พิมพ์รายงานประจำเดือน", "📏 เลขไมล์", "🛠️ PM Plan รายเดือน", "📖 คู่มือการใช้งาน"]
 with st.sidebar:
     st.markdown("### 🚛 Speed Fleet Maintenance")
     st.caption(f"Web v{WEB_VERSION} · report engine v{core.APP_VERSION}")
@@ -325,8 +331,13 @@ with st.sidebar:
     st.link_button("📖 เปิดคู่มือ (แท็บใหม่)", MANUAL_URL, **FULL)
     st.divider()
 
-if PAGE == PAGES[4]:
-    st.markdown('<div class="app-hero"><h1>📖 คู่มือการใช้งาน</h1><p>วิธีใช้ทั้ง 3 หน้า · Export M1/M2/M3 · เลขไมล์ · สำรอง/กู้คืน · แก้ปัญหา</p></div>',
+if PAGE == PAGES[0]:
+    import monthly_report_page
+    monthly_report_page.render_asset_master(IS_LOCAL, CURRENT_USER, FULL, APP_ROOT, kpi)
+    st.stop()
+
+if PAGE == PAGES[6]:
+    st.markdown('<div class="app-hero"><h1>📖 คู่มือการใช้งาน</h1><p>วิธีใช้ทุกหน้า · รายการอุปกรณ์ · Export M1/M2/M3 · พิมพ์ KPI & รายงานซ่อมประจำเดือน · เลขไมล์ · สำรอง/กู้คืน · แก้ปัญหา</p></div>',
                 unsafe_allow_html=True)
     if os.path.exists(MANUAL_PATH):
         with open(MANUAL_PATH, "r", encoding="utf-8") as fh_:
@@ -344,15 +355,20 @@ if PAGE == PAGES[4]:
         st.error(f"ไม่พบไฟล์คู่มือ: {MANUAL_PATH}")
     st.stop()
 
-if PAGE == PAGES[3]:
+if PAGE == PAGES[5]:
     import pm_plan_page
-    pm_plan_page.render_pm(IS_LOCAL, CURRENT_USER, FULL, os.path.dirname(os.path.abspath(__file__)), kpi)
+    pm_plan_page.render_pm(IS_LOCAL, CURRENT_USER, FULL, APP_ROOT, kpi)
     st.stop()
 
-if PAGE in PAGES[1:3]:
+if PAGE == PAGES[3]:
+    import monthly_report_page
+    monthly_report_page.render_monthly(IS_LOCAL, CURRENT_USER, FULL, APP_ROOT, kpi)
+    st.stop()
+
+if PAGE in (PAGES[2], PAGES[4]):
     import repair_request_page
-    (repair_request_page.render if PAGE == PAGES[1] else repair_request_page.render_mileage)(
-        IS_LOCAL, CURRENT_USER, FULL, os.path.dirname(os.path.abspath(__file__)), kpi)
+    (repair_request_page.render if PAGE == PAGES[2] else repair_request_page.render_mileage)(
+        IS_LOCAL, CURRENT_USER, FULL, APP_ROOT, kpi)
     st.stop()
 
 # ----------------------------------------------------------------------------- state

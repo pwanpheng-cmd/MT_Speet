@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS repair_request (
     status          TEXT NOT NULL CHECK (status IN ('Approved','Open','Cancel')),
     row_hash        TEXT NOT NULL,
     confirm_flag    TEXT NOT NULL DEFAULT 'Yes' CHECK (confirm_flag IN ('Yes','No')),
+    in_iso          TEXT NOT NULL DEFAULT 'Yes' CHECK (in_iso IN ('Yes','No')),
     flag_reason     TEXT,
     data_note       TEXT,
     source_row      INTEGER,
@@ -92,7 +93,9 @@ CREATE INDEX IF NOT EXISTS ix_review_hash ON repair_request_review(doc_no, incom
 CREATE VIEW IF NOT EXISTS v_kpi_asset_month AS
 SELECT report_month, asset_type, asset_code, COUNT(*) AS n_requests,
        MIN(report_date) AS first_report, MAX(report_date) AS last_report
-FROM repair_request GROUP BY report_month, asset_type, asset_code;
+FROM repair_request
+WHERE in_iso = 'Yes'
+GROUP BY report_month, asset_type, asset_code;
 """
 
 STATUS = {"Approved", "Open", "Cancel"}
@@ -222,11 +225,59 @@ def read_workbook(src):
 
 
 # ----------------------------------------------------------------------------- DB
+def sync_m1_iso(con_or_path):
+    """ปรับคอลัมน์ in_iso ของใบแจ้งซ่อมหัวลาก (M1) ให้ตรงกับ asset_master (หัวลาก is_active=1 -> 'Yes', อื่นๆ -> 'No')"""
+    own = isinstance(con_or_path, str)
+    con = sqlite3.connect(con_or_path) if own else con_or_path
+    try:
+        has_am = con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='asset_master'").fetchone()
+        if not has_am:
+            return dict(yes=0, no=0, synced=False)
+        n_master = con.execute("SELECT COUNT(*) FROM asset_master WHERE asset_type='หัวลาก' AND is_active=1").fetchone()[0]
+        if n_master == 0:
+            return dict(yes=0, no=0, synced=False)
+        con.execute("""
+            UPDATE repair_request
+            SET in_iso = CASE
+                WHEN EXISTS (
+                    SELECT 1 FROM asset_master am
+                    WHERE am.asset_type = 'หัวลาก'
+                      AND am.is_active = 1
+                      AND am.asset_code = repair_request.asset_code
+                ) THEN 'Yes'
+                ELSE 'No'
+            END
+            WHERE asset_type = 'หัวลาก'
+        """)
+        if own:
+            con.commit()
+        yes_n = con.execute("SELECT COUNT(*) FROM repair_request WHERE asset_type='หัวลาก' AND in_iso='Yes'").fetchone()[0]
+        no_n = con.execute("SELECT COUNT(*) FROM repair_request WHERE asset_type='หัวลาก' AND in_iso='No'").fetchone()[0]
+        return dict(yes=yes_n, no=no_n, master_count=n_master, synced=True)
+    finally:
+        if own:
+            con.close()
+
+
 def connect(db_path):
     os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
     con.executescript(SCHEMA_SQL)
+    cols = {r[1] for r in con.execute("PRAGMA table_info(repair_request)")}
+    if "in_iso" not in cols:
+        con.execute("ALTER TABLE repair_request ADD COLUMN in_iso TEXT NOT NULL DEFAULT 'Yes' CHECK (in_iso IN ('Yes','No'))")
+        con.execute("DROP VIEW IF EXISTS v_kpi_asset_month")
+        con.execute("""
+            CREATE VIEW v_kpi_asset_month AS
+            SELECT report_month, asset_type, asset_code, COUNT(*) AS n_requests,
+                   MIN(report_date) AS first_report, MAX(report_date) AS last_report
+            FROM repair_request
+            WHERE in_iso = 'Yes'
+            GROUP BY report_month, asset_type, asset_code
+        """)
+        sync_m1_iso(con)
+        con.commit()
     return con
 
 
@@ -345,6 +396,7 @@ def commit(db_path, records, file_name, file_bytes_sha, user=None, n_blank=0):
                             (f"รายการที่เคยส่งตรวจแล้ว {len(plan['review_known'])} รายการ (ไม่ส่งซ้ำ)", bid))
             con.execute("UPDATE import_batch SET " + ",".join(f"{k}=?" for k in stats) + " WHERE batch_id=?",
                         list(stats.values()) + [bid])
+            sync_m1_iso(con)
         return dict(batch_id=bid, backup=bpath, is_base=is_base, review_known=len(plan["review_known"]), **stats)
     finally:
         con.close()
@@ -370,6 +422,8 @@ def decide_review(db_path, review_id, decision, user, chosen_index=0):
                     _insert(con, rec, rv["batch_id"])
             con.execute("UPDATE repair_request_review SET decision=?, decided_by=?, decided_at=datetime('now','localtime') WHERE review_id=?",
                         (decision, user, review_id))
+            if decision == "นำเข้า":
+                sync_m1_iso(con)
         return True, "บันทึกแล้ว"
     finally:
         con.close()
@@ -391,11 +445,13 @@ def summary(db_path):
         con.close()
 
 
-def kpi_table(db_path):
+def kpi_table(db_path, iso_only=True):
     con = connect(db_path)
     try:
+        where = "WHERE in_iso = 'Yes'" if iso_only else ""
         return [dict(r) for r in con.execute(
-            "SELECT report_month, asset_type, COUNT(*) AS vehicles, SUM(n_requests) AS requests FROM v_kpi_asset_month GROUP BY 1,2 ORDER BY 1,2")]
+            f"SELECT report_month, asset_type, COUNT(DISTINCT asset_code) AS vehicles, COUNT(*) AS requests "
+            f"FROM repair_request {where} GROUP BY 1,2 ORDER BY 1,2")]
     finally:
         con.close()
 
@@ -649,8 +705,8 @@ M_SHEETS = {
     "หัวลาก": dict(name="M1_ซ่อมรถ",
                    headers=["ลำดับ", "เลขที่เอกสาร", "วันที่เปิดเอกสาร", "วันที่แจ้งซ่อม", "เวลา", "ทะเบียน / เบอร์ตู้",
                             "รหัสพนักงาน", "สถานะซ่อม", "ทะเบียน", "ยี่ห้อ", "เดือน", "Index", "ISO"],
-                   formulas=['=RIGHT(F{r}, 7)', '=LEFT(F{r}, 6)', '=TEXT(D{r},"MMm-YY")', '=K{r}&":"&I{r}',
-                             '=_xlfn.XLOOKUP(I{r},pm!B:B,pm!I:I,"No",0)'],
+                   formulas=['=RIGHT(F{r}, 7)', '=LEFT(F{r}, 6)', '=TEXT(D{r},"MMm-YY")', '=K{r}&":"&I{r}'],
+                   has_iso_col=True,
                    widths=[9.2, 18.1, 14.1, 14.1, 11.9, 29.2, 18.1, 12, 11.8, 9, 9, 12.2, 8]),
     "หางพ่วง": dict(name="M2_ซ่อมหาง",
                     headers=["ลำดับ", "เลขที่เอกสาร", "วันที่เปิดเอกสาร", "วันที่แจ้งซ่อม", "เวลา", "ทะเบียน / เบอร์ตู้",
@@ -676,56 +732,88 @@ def _num_or_text(v):
         return v
 
 
-def export_m_sheets(db_path, out_path=None):
-    """สร้างไฟล์ Excel ชีต M1_ซ่อมรถ/M2_ซ่อมหาง/M3_ซ่อมตู้ จากฐานข้อมูล (1 แถว = 1 เลขเอกสาร, เรียงตามวันที่แจ้งซ่อม)
-    คอลัมน์ B–H = ข้อมูล ; I–M = สูตรเดียวกับไฟล์ต้นฉบับ (ISO อ้างชีต pm ของไฟล์หลัก) ; คืน bytes ถ้าไม่ระบุ out_path"""
-    import io
+def append_m_sheets(wb, con, year=None, max_month=None):
+    """เพิ่มชีต M1_ซ่อมรถ / M2_ซ่อมหาง / M3_ซ่อมตู้ ลงใน Workbook ที่กำหนด (เฉพาะ ISO = Yes เท่านั้น)
+    - ถ้าระบุ year และ max_month จะกรอง report_month ในปีนั้นไม่เกินเดือนที่เลือก (YTD)
+    - คืน dict จำนวนแถวแต่ละชีต"""
     import openpyxl
     from openpyxl.styles import Font, Alignment
+    sync_m1_iso(con)
+    con.commit()
+    base_font = Font(name="Angsana New", size=16)
+    hdr_font = Font(name="Angsana New", size=16, bold=True)
+    counts = {}
+    ym_limit = f"{int(year):04d}-{int(max_month):02d}" if (year and max_month) else None
+    for at, spec in M_SHEETS.items():
+        ws = wb.create_sheet(spec["name"])
+        for j, h in enumerate(spec["headers"], 1):
+            c = ws.cell(2, j, h)
+            c.font = hdr_font
+            c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        if ym_limit:
+            rows = con.execute(
+                "SELECT * FROM repair_request WHERE asset_type=? AND in_iso='Yes' "
+                "AND report_month LIKE ? AND report_month <= ? ORDER BY report_date, doc_no",
+                (at, f"{int(year):04d}-%", ym_limit),
+            ).fetchall()
+        elif year:
+            rows = con.execute(
+                "SELECT * FROM repair_request WHERE asset_type=? AND in_iso='Yes' "
+                "AND report_month LIKE ? ORDER BY report_date, doc_no",
+                (at, f"{int(year):04d}-%"),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT * FROM repair_request WHERE asset_type=? AND in_iso='Yes' ORDER BY report_date, doc_no",
+                (at,),
+            ).fetchall()
+        r = 3
+        for row in rows:
+            vals = [None, row["doc_no"],
+                    dt.datetime.fromisoformat(row["open_date"]) if row["open_date"] else None,
+                    dt.datetime.fromisoformat(row["report_date"]),
+                    _num_or_text(row["report_time_raw"]) if row["report_time_raw"] is not None else 0,
+                    row["asset_raw"],
+                    _num_or_text(row["employee_code"]) if row["employee_code"] else ".",
+                    row["status"]]
+            for j, v in enumerate(vals, 1):
+                c = ws.cell(r, j, v)
+                c.font = base_font
+                if j in (3, 4):
+                    c.number_format = "d/m/yyyy"
+            for k, f in enumerate(spec["formulas"]):
+                c = ws.cell(r, 9 + k, f.format(r=r))
+                c.font = base_font
+            if spec.get("has_iso_col"):
+                c_iso = ws.cell(r, 13, row["in_iso"] if "in_iso" in row.keys() else "Yes")
+                c_iso.font = base_font
+                c_iso.alignment = Alignment(horizontal="center")
+            r += 1
+        for j, w in enumerate(spec["widths"], 1):
+            ws.column_dimensions[openpyxl.utils.get_column_letter(j)].width = w
+        ws.freeze_panes = "C3"
+        ws.auto_filter.ref = f"A2:{openpyxl.utils.get_column_letter(len(spec['headers']))}{max(r - 1, 2)}"
+        counts[spec["name"]] = len(rows)
+    return counts
+
+
+def export_m_sheets(db_path, out_path=None):
+    """สร้างไฟล์ Excel ชีต M1_ซ่อมรถ/M2_ซ่อมหาง/M3_ซ่อมตู้ จากฐานข้อมูล (1 แถว = 1 เลขเอกสาร, เรียงตามวันที่แจ้งซ่อม)
+    คอลัมน์ B–H = ข้อมูล ; I–M = สูตรเดียวกับไฟล์ต้นฉบับ (ISO = Yes เท่านั้น) ; คืน bytes ถ้าไม่ระบุ out_path"""
+    import io
+    import openpyxl
     con = connect(db_path)
     try:
         wb = openpyxl.Workbook()
         wb.remove(wb.active)
-        base_font = Font(name="Angsana New", size=16)
-        hdr_font = Font(name="Angsana New", size=16, bold=True)
-        counts = {}
-        for at, spec in M_SHEETS.items():
-            ws = wb.create_sheet(spec["name"])
-            for j, h in enumerate(spec["headers"], 1):
-                c = ws.cell(2, j, h)
-                c.font = hdr_font
-                c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            rows = con.execute("SELECT * FROM repair_request WHERE asset_type=? ORDER BY report_date, doc_no", (at,)).fetchall()
-            r = 3
-            for row in rows:
-                vals = [None, row["doc_no"],
-                        dt.datetime.fromisoformat(row["open_date"]) if row["open_date"] else None,
-                        dt.datetime.fromisoformat(row["report_date"]),
-                        _num_or_text(row["report_time_raw"]) if row["report_time_raw"] is not None else 0,
-                        row["asset_raw"],
-                        _num_or_text(row["employee_code"]) if row["employee_code"] else ".",
-                        row["status"]]
-                for j, v in enumerate(vals, 1):
-                    c = ws.cell(r, j, v)
-                    c.font = base_font
-                    if j in (3, 4):
-                        c.number_format = "d/m/yyyy"
-                for k, f in enumerate(spec["formulas"]):
-                    c = ws.cell(r, 9 + k, f.format(r=r))
-                    c.font = base_font
-                r += 1
-            for j, w in enumerate(spec["widths"], 1):
-                ws.column_dimensions[openpyxl.utils.get_column_letter(j)].width = w
-            ws.freeze_panes = "C3"
-            ws.auto_filter.ref = f"A2:{openpyxl.utils.get_column_letter(len(spec['headers']))}{max(r - 1, 2)}"
-            counts[spec["name"]] = len(rows)
+        counts = append_m_sheets(wb, con)
         # ข้อมูลประกอบ
         info = wb.create_sheet("ข้อมูลการ Export")
         rv = con.execute("SELECT doc_no, kind, reason FROM repair_request_review WHERE decision IS NULL").fetchall()
         lines = [("สร้างจากฐานข้อมูล", os.path.basename(db_path)), ("เวลา Export", dt.datetime.now().strftime("%d/%m/%Y %H:%M"))]
         lines += [(f"จำนวนแถว {k}", v) for k, v in counts.items()]
         lines += [("หมายเหตุ", "1 แถว = 1 เลขที่เอกสาร (ตัดแถวซ้ำแล้ว) เรียงตามวันที่แจ้งซ่อม ; คอลัมน์ I–M เป็นสูตรเดียวกับไฟล์หลัก"),
-                  ("หมายเหตุ ISO", "สูตร ISO อ้างชีต pm ในไฟล์หลัก — ในไฟล์นี้จะแสดง error จนกว่าจะวางลงไฟล์หลัก"),
+                  ("หมายเหตุ ISO", "ชีต M1_ซ่อมรถ ส่งออกเฉพาะทะเบียนที่ตรงกับรายการอุปกรณ์หัวลาก (ISO = Yes) — ไม่รวม ISO = No"),
                   ("วิธีอัปเดต", "ในไฟล์หลัก ลบข้อมูลเดิมตั้งแต่แถว 3 ของแต่ละชีต แล้วคัดลอกแถว 3 ลงไปทั้งหมด (คอลัมน์ A–M) จากไฟล์นี้ไปวางที่แถว 3"),
                   ("รายการรอตรวจที่ไม่ได้อยู่ในไฟล์นี้", len(rv))]
         for k, v in lines:
