@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>คู่มือการใช้งาน — Speed Fleet Maintenance</title>
+<style>
+  :root{--blue:#1f6fb2;--blue-soft:#e8f1fa;--ink:#1d2733;--muted:#5b6878;--line:#dde3ea;--ok:#1e8e5a;--warn:#c06a00;--warn-soft:#fff4e5;--bg:#f6f8fb}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;font-family:"Sarabun","Leelawadee UI","Tahoma",sans-serif;color:var(--ink);background:var(--bg);line-height:1.7;font-size:16px}
+  header{background:linear-gradient(120deg,#164f80,var(--blue));color:#fff;padding:28px 32px}
+  header h1{margin:0 0 4px;font-size:26px}
+  header p{margin:0;opacity:.9}
+  .wrap{display:flex;max-width:1200px;margin:0 auto;gap:24px;padding:24px}
+  nav{flex:0 0 250px;position:sticky;top:16px;align-self:flex-start;background:#fff;border:1px solid var(--line);border-radius:10px;padding:14px 16px;max-height:calc(100vh - 32px);overflow:auto}
+  nav b{display:block;margin-bottom:6px;color:var(--muted);font-size:13px;letter-spacing:.3px}
+  nav a{display:block;color:var(--ink);text-decoration:none;padding:4px 6px;border-radius:6px;font-size:15px}
+  nav a:hover{background:var(--blue-soft);color:var(--blue)}
+  nav a.sub{padding-left:18px;font-size:14px;color:var(--muted)}
+  main{flex:1;min-width:0}
+  section{background:#fff;border:1px solid var(--line);border-radius:10px;padding:22px 26px;margin-bottom:18px}
+  h2{margin:0 0 12px;font-size:21px;color:#164f80;border-bottom:2px solid var(--blue-soft);padding-bottom:8px}
+  h3{margin:20px 0 8px;font-size:17px}
+  ol,ul{padding-left:22px;margin:6px 0}
+  li{margin:3px 0}
+  code,kbd{background:#eef2f6;border-radius:4px;padding:1px 6px;font-family:Consolas,monospace;font-size:14px}
+  .btn{display:inline-block;background:var(--blue);color:#fff;border-radius:6px;padding:0 8px;font-size:14px;white-space:nowrap}
+  .btn.light{background:#fff;color:var(--ink);border:1px solid var(--line)}
+  .note,.warn,.ok{border-radius:8px;padding:10px 14px;margin:12px 0;font-size:15px}
+  .note{background:var(--blue-soft);border-left:4px solid var(--blue)}
+  .warn{background:var(--warn-soft);border-left:4px solid var(--warn)}
+  .ok{background:#e8f6ef;border-left:4px solid var(--ok)}
+  table{border-collapse:collapse;width:100%;margin:10px 0;font-size:15px}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:#f0f4f8}
+  .flow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:10px 0}
+  .flow span{background:var(--blue-soft);color:#164f80;border-radius:20px;padding:4px 12px;font-size:14px}
+  .flow i{color:var(--muted);font-style:normal}
+  footer{color:var(--muted);font-size:13px;text-align:center;padding:10px 0 30px}
+  @media (max-width:860px){.wrap{flex-direction:column}nav{position:static;max-height:none}}
+  @media print{nav,header{display:none}.wrap{display:block;padding:0}section{break-inside:avoid;border:none}}
+</style>
+</head>
+<body>
+<header>
+  <h1>🚛 คู่มือการใช้งาน Speed Fleet Maintenance</h1>
+  <p>ระบบรายงานซ่อมรายคัน · ฐานข้อมูลใบแจ้งซ่อม · เลขไมล์ — สำหรับ GUI เวอร์ชัน 1.6.2</p>
+</header>
+
+<div class="wrap">
+<nav>
+  <b>สารบัญ</b>
+  <a href="#start">1. เริ่มใช้งาน</a>
+  <a class="sub" href="#open">เปิดโปรแกรมบนเครื่อง</a>
+  <a class="sub" href="#login">ล็อกอิน / สร้างผู้ใช้</a>
+  <a class="sub" href="#mode">บนเครื่อง vs บนเว็บ</a>
+  <a href="#p1">2. รายงานซ่อมรายคัน</a>
+  <a href="#p2">3. ฐานข้อมูลใบแจ้งซ่อม</a>
+  <a class="sub" href="#p2-db">① เลือกไฟล์ฐานข้อมูล</a>
+  <a class="sub" href="#p2-import">นำเข้าไฟล์</a>
+  <a class="sub" href="#p2-review">รอตรวจ</a>
+  <a class="sub" href="#p2-data">ข้อมูลในฐาน</a>
+  <a class="sub" href="#p2-export">Export M1/M2/M3</a>
+  <a class="sub" href="#p2-kpi">KPI และประวัติ</a>
+  <a href="#p3">4. เลขไมล์</a>
+  <a href="#rules">5. กฎของข้อมูล</a>
+  <a href="#backup">6. สำรองและกู้คืน</a>
+  <a href="#trouble">7. แก้ปัญหาที่พบบ่อย</a>
+</nav>
+
+<main>
+
+<section id="start">
+  <h2>1. เริ่มใช้งาน</h2>
+  <p>เปิดใช้ได้ 2 แบบ คือ <b>บนเครื่อง</b> (ดับเบิลคลิก .bat) และ <b>บนเว็บ</b> (<code>https://speed-vehicle-report.streamlit.app</code>) หน้าจอเหมือนกัน เลือกหน้าจากเมนูด้านซ้าย:</p>
+  <table>
+    <tr><th>หน้า</th><th>ใช้ทำอะไร</th></tr>
+    <tr><td>🚛 รายงานซ่อมรายคัน</td><td>อ่านไฟล์รายงานเบิกพัสดุ/สั่งซ่อมรายคัน กระทบยอด และ Export เป็น Excel</td></tr>
+    <tr><td>🗂️ ฐานข้อมูลใบแจ้งซ่อม</td><td>เก็บใบแจ้งซ่อม หัวลาก/หางพ่วง/ตู้เย็น แบบกันซ้ำ, ดู KPI, Export ไปอัปเดตชีต M1/M2/M3</td></tr>
+    <tr><td>📏 เลขไมล์</td><td>นำเข้าเลขไมล์รายคัน ดูเลขไมล์ล่าสุดและประวัติ</td></tr>
+    <tr><td>📖 คู่มือการใช้งาน</td><td>หน้านี้</td></tr>
+  </table>
+
+  <h3 id="open">เปิดโปรแกรมบนเครื่อง</h3>
+  <ol>
+    <li>เปิดโฟลเดอร์ <code>D:\MT_Speet</code></li>
+    <li>ดับเบิลคลิก <code>Run_Vehicle_Report_Web.bat</code></li>
+    <li>หน้าต่างสีดำจะขึ้นมา — <b>เปิดทิ้งไว้ ห้ามปิด</b> แล้วเบราว์เซอร์จะเปิดที่ <code>http://localhost:8501</code> เอง (ถ้าไม่เปิด ให้พิมพ์ที่อยู่นี้เอง)</li>
+    <li>ใช้งานเสร็จ ปิดหน้าต่างสีดำเพื่อหยุดโปรแกรม</li>
+  </ol>
+  <div class="note">ครั้งแรกบนเครื่องใหม่ โปรแกรมจะติดตั้ง library ที่จำเป็นให้อัตโนมัติ อาจใช้เวลา 1–3 นาที ต้องมี Python 3.11 ขึ้นไปในเครื่อง</div>
+
+  <h3 id="login">ล็อกอิน / สร้างผู้ใช้</h3>
+  <ul>
+    <li>ถ้ามีผู้ใช้แล้ว: กรอก <b>ชื่อผู้ใช้</b> และ <b>รหัสผ่าน</b> แล้วกดเข้าสู่ระบบ</li>
+    <li>ใส่รหัสผิดหลายครั้ง ระบบจะล็อกชั่วคราว รอสักครู่แล้วลองใหม่</li>
+    <li>ครั้งแรกที่ยังไม่มีผู้ใช้ จะเห็นหน้า <b>🔐 ตั้งค่าผู้ใช้ครั้งแรก</b>: กรอกชื่อผู้ใช้ (อังกฤษ/ตัวเลข) และรหัสผ่านอย่างน้อย 8 ตัว → ระบบสร้าง "บรรทัดผู้ใช้" (รหัสผ่านถูกเข้ารหัสแล้ว) → นำไปวางใน Secrets ตามคำแนะนำบนหน้าจอ</li>
+    <li>ออกจากระบบ: ปุ่ม <span class="btn light">ออกจากระบบ</span> ใต้ชื่อผู้ใช้ในเมนูซ้าย</li>
+  </ul>
+
+  <h3 id="mode">บนเครื่อง vs บนเว็บ</h3>
+  <table>
+    <tr><th></th><th>บนเครื่อง (.bat)</th><th>บนเว็บ (Streamlit Cloud)</th></tr>
+    <tr><td>ฐานข้อมูล</td><td>Browse ไฟล์ .sqlite → อ่าน/บันทึกที่ไฟล์นั้นโดยตรง</td><td>Browse ไฟล์ .sqlite จากเครื่อง → ทำงานบนสำเนา → ดาวน์โหลดกลับ</td></tr>
+    <tr><td>แหล่งไฟล์รายงาน</td><td>Browse โฟลเดอร์ หรืออัปโหลด</td><td>อัปโหลดเท่านั้น</td></tr>
+    <tr><td>เหมาะกับ</td><td>งานบันทึกข้อมูลหลักประจำวัน</td><td>เครื่องที่ไม่มี Python / ใช้นอกสถานที่</td></tr>
+  </table>
+  <div class="warn">ใช้ <b>ฐานข้อมูลหลักชุดเดียว</b> (<code>D:\MT_Speet\data\Repair_Request_v2.sqlite</code>) — ถ้าคัดลอกไปหลายเครื่องหรือแก้บนเว็บแล้วไม่ดาวน์โหลดกลับ ข้อมูลจะไม่ตรงกัน · การเปิดฐานบนเว็บเป็นการส่งข้อมูลขึ้นเซิร์ฟเวอร์ชั่วคราว ใช้ตามที่ DATA_OWNER อนุญาต</div>
+</section>
+
+<section id="p1">
+  <h2>2. หน้า 🚛 รายงานซ่อมรายคัน</h2>
+  <h3>ขั้นตอน</h3>
+  <ol>
+    <li><b>① เลือกแหล่งข้อมูล</b> ในเมนูซ้าย
+      <ul>
+        <li><b>โฟลเดอร์ในเครื่อง</b>: กดปุ่ม 📁 เพื่อเลือกโฟลเดอร์รายงานรายคัน (เช่น <code>D:\MT_Speet\Vehicle_Reports</code>) หรือพิมพ์ path</li>
+        <li><b>อัปโหลดไฟล์</b>: เลือกไฟล์ .xls/.xlsx หลายไฟล์ หรือบีบอัดทั้งโฟลเดอร์เป็น .zip แล้วอัปโหลดไฟล์เดียว</li>
+      </ul>
+    </li>
+    <li>เปิด <b>ตัดไฟล์ซ้ำ</b> ไว้ (ค่าเริ่มต้น) เพื่อข้ามไฟล์ที่เนื้อหาเหมือนกัน</li>
+    <li>กด <span class="btn">🔍 อ่านข้อมูล</span></li>
+    <li>ดูผลในแท็บด้านขวา แล้วกด <span class="btn light">📤 Export Excel</span> → เลือกโฟลเดอร์ปลายทาง (บนเครื่อง) หรือกดดาวน์โหลด</li>
+  </ol>
+  <h3>แท็บผลลัพธ์</h3>
+  <table>
+    <tr><th>แท็บ</th><th>เนื้อหา</th></tr>
+    <tr><td>📊 ภาพรวม</td><td>การ์ดสรุป (จำนวนไฟล์ ทะเบียน กระทบยอด ยอดเบิก ยอดสั่งซ่อม), ค่าใช้จ่ายรายเดือน, 15 คันค่าใช้จ่ายสูงสุด, อู่/ผู้ขาย, คลังที่เบิก</td></tr>
+    <tr><td>สรุปไฟล์</td><td>ผลอ่านทีละไฟล์ และผลกระทบยอด 6 จุดต่อไฟล์</td></tr>
+    <tr><td>สรุปรายคัน</td><td>ยอดรวมต่อทะเบียน รวมเลขไมล์</td></tr>
+    <tr><td>เบิกพัสดุ</td><td>รายการเบิก (WX) ทุกบรรทัด</td></tr>
+    <tr><td>ใบสั่งซ่อม_หัว / ใบสั่งซ่อม_บรรทัด</td><td>ใบสั่งซ่อมภายนอก (W/O) ระดับหัวเอกสารและรายบรรทัด</td></tr>
+    <tr><td>⚠️ ประเด็น_Flag</td><td>รายการที่ต้องตรวจ เช่น ยอดไม่ตรง หรือ Flag No</td></tr>
+  </table>
+  <p>ล้างข้อมูลที่อ่านไว้: ปุ่ม <span class="btn light">🧹 ล้างข้อมูลใน session</span></p>
+</section>
+
+<section id="p2">
+  <h2>3. หน้า 🗂️ ฐานข้อมูลใบแจ้งซ่อม</h2>
+  <p>ด้านบนแสดงการ์ด: ใบแจ้งซ่อมทั้งหมด, จำนวนแยก หัวลาก/หางพ่วง/ตู้เย็น และจำนวน <b>รอตรวจ</b></p>
+
+  <h3 id="p2-db">① เลือกไฟล์ฐานข้อมูล (Browse Data File)</h3>
+  <p>ทั้งหน้า <b>ฐานข้อมูลใบแจ้งซ่อม</b> และ <b>เลขไมล์</b> ใช้ไฟล์ฐานข้อมูลเดียวกัน <code>Repair_Request_v2.sqlite</code> — เลือกที่เมนูซ้ายหัวข้อ <b>① ไฟล์ฐานข้อมูล</b> ครั้งเดียว ใช้ได้ทั้งสองหน้า</p>
+  <table>
+    <tr><th></th><th>บนเครื่อง (.bat)</th><th>บนเว็บ</th></tr>
+    <tr><td>เลือกไฟล์</td><td>กด <span class="btn light">📁</span> แล้ว Browse ไฟล์ .sqlite (ค่าเริ่มต้น <code>D:\MT_Speet\data\Repair_Request_v2.sqlite</code>) หรือพิมพ์ path</td><td>กด <b>Browse files</b> แล้วเลือกไฟล์ .sqlite จากเครื่อง (เช่น <code>D:\MT_Speet\data</code>)</td></tr>
+    <tr><td>บันทึกข้อมูล</td><td>บันทึกลงไฟล์นั้นโดยตรง และสำรองอัตโนมัติก่อนนำเข้าทุกครั้ง</td><td>ทำงานบน <b>สำเนาชั่วคราว</b> — เมื่อมีการเปลี่ยนแปลงจะขึ้นแถบเตือนสีเหลือง ให้กด <span class="btn">⬇️ ดาวน์โหลดฐานข้อมูล (บันทึกกลับเครื่อง)</span> แล้ววางทับไฟล์เดิม</td></tr>
+    <tr><td>ปิดโปรแกรม</td><td>ข้อมูลอยู่ในไฟล์แล้ว</td><td>ถ้าไม่ได้ดาวน์โหลดกลับ สิ่งที่นำเข้าบนเว็บจะหาย</td></tr>
+  </table>
+  <div class="warn"><b>บนเว็บ — วางไฟล์กลับเครื่อง:</b> ปิดโปรแกรมบนเครื่องก่อน (ถ้าเปิดอยู่) → เปลี่ยนชื่อไฟล์เดิมเก็บไว้ (เช่น เติม <code>_old</code>) → นำไฟล์ที่ดาวน์โหลดมาวางเป็น <code>D:\MT_Speet\data\Repair_Request_v2.sqlite</code><br>ใช้ฐานข้อมูลหลักชุดเดียว — อย่าแก้ไขพร้อมกันทั้งบนเว็บและบนเครื่อง</div>
+  <p>ไม่ได้เลือกไฟล์บนเว็บ: ระบบใช้ฐานว่างชั่วคราว เหมาะสำหรับตรวจไฟล์ก่อนนำเข้าจริง</p>
+
+  <h3 id="p2-import">📥 นำเข้าไฟล์</h3>
+  <div class="flow"><span>เลือกไฟล์ .xlsx</span><i>→</i><span>ตรวจไฟล์ (ยังไม่บันทึก)</span><i>→</i><span>ดูผล ใหม่/อัปเดต/รอตรวจ</span><i>→</i><span>ติ๊กยืนยัน</span><i>→</i><span>นำเข้า</span></div>
+  <ol>
+    <li>อัปโหลดไฟล์ข้อมูลรถ (.xlsx) — รองรับทั้งไฟล์ที่มีชีต <b>M1_ซ่อมรถ / M2_ซ่อมหาง / M3_ซ่อมตู้</b> และไฟล์รายเดือนที่มีชีต <b>หัวลาก / หางพ่วง / ตู้เย็น</b></li>
+    <li>กด <span class="btn light">🔍 2) ตรวจไฟล์ (ยังไม่บันทึก)</span> — ระบบอ่านและเทียบกับฐาน <b>ยังไม่บันทึกอะไร</b></li>
+    <li>ดูผลในแท็บย่อย:
+      <ul>
+        <li><b>ใหม่</b> — เลขที่เอกสารที่ยังไม่มีในฐาน</li>
+        <li><b>อัปเดต</b> — เอกสารเดิมที่สถานะ/เวลา/พนักงาน ฯลฯ เปลี่ยน (เก็บประวัติค่าเดิมไว้)</li>
+        <li><b>รอตรวจ</b> — ข้อมูลไม่สอดคล้อง จะไม่เข้าตารางหลัก</li>
+        <li>รายการซ้ำในไฟล์ / หมายเหตุเวลา (เวลาที่อ่านไม่ได้จะเก็บค่าตามต้นฉบับ ไม่เดา)</li>
+      </ul>
+      กด <span class="btn light">Export ผลการตรวจ (Excel)</span> เพื่อเก็บผลไว้ตรวจได้
+    </li>
+    <li>ติ๊ก <b>ตรวจผลด้านบนแล้ว ยืนยันนำเข้า</b> แล้วกดปุ่มนำเข้า (ครั้งแรกปุ่มจะชื่อ <b>สร้างฐานข้อมูลหลัก (ชุดแรก)</b>)</li>
+  </ol>
+  <div class="ok">ก่อนนำเข้าทุกครั้ง ระบบสำรองฐานข้อมูลอัตโนมัติไว้ที่ <code>data\backup\</code> · นำเข้าไฟล์เดิมซ้ำได้ ไม่เกิดข้อมูลซ้ำ</div>
+
+  <h3 id="p2-review">⚠️ รอตรวจ</h3>
+  <p>รายการที่ระบบไม่นำเข้าเอง ต้องให้ <b>DATA_OWNER</b> ตัดสิน:</p>
+  <table>
+    <tr><th>ประเภท</th><th>ความหมาย</th></tr>
+    <tr><td>ข้อมูลไม่ผ่านตรวจ</td><td>เช่น วันที่/ทะเบียน/ประเภทรถอ่านไม่ได้</td></tr>
+    <tr><td>ฟิลด์หลักเปลี่ยน</td><td>เอกสารเดิมแต่ประเภทรถ วันที่แจ้งซ่อม หรือรหัสรถเปลี่ยนไป</td></tr>
+    <tr><td>ซ้ำในไฟล์ค่าต่างกัน</td><td>เลขที่เอกสารเดียวกันอยู่หลายแถวในไฟล์ แต่ค่าไม่เหมือนกัน</td></tr>
+  </table>
+  <ol>
+    <li>อ่านเหตุผลและข้อมูลในกรอบ</li>
+    <li>ถ้ามีหลายแถว เลือก <b>ใช้แถวที่</b> ต้องการ</li>
+    <li>กด <span class="btn">นำเข้า</span> (ใช้ค่าตามไฟล์) หรือ <span class="btn light">ไม่นำเข้า</span> — ระบบบันทึกชื่อผู้ตัดสินและเวลา</li>
+  </ol>
+
+  <h3 id="p2-data">📋 ข้อมูลในฐาน</h3>
+  <ul>
+    <li>กรองตาม <b>ประเภท</b>, <b>เดือน</b>, <b>สถานะ</b> (Approved/Open/Cancel) และช่อง <b>ค้นหา</b> (ทะเบียน / เลขเอกสาร / รหัสพนักงาน) แล้วกด <span class="btn light">Export ข้อมูลที่กรอง (Excel)</span></li>
+    <li>วันที่แสดงเป็นรูปแบบ วัน/เดือน/ปี (DD/MM/YYYY)</li>
+  </ul>
+
+  <h3 id="p2-export">📤 Export ไปอัปเดตชีต M1/M2/M3</h3>
+  <ol>
+    <li>ที่แท็บ <b>ข้อมูลในฐาน</b> กด <span class="btn light">📤 สร้างไฟล์ M1/M2/M3</span> (ใช้เวลาประมาณ 10–30 วินาที)</li>
+    <li>กด <span class="btn">⬇️ ดาวน์โหลด อัปเดต_M1_M2_M3_วันที่_เวลา.xlsx</span></li>
+    <li>ไฟล์มี 4 ชีต: <b>M1_ซ่อมรถ, M2_ซ่อมหาง, M3_ซ่อมตู้</b> (หัวตาราง สูตร และฟอนต์เหมือนไฟล์หลัก) และ <b>ข้อมูลการ Export</b> (จำนวนแถว เวลา และรายการรอตรวจที่ยังไม่รวม)</li>
+  </ol>
+  <h3>วิธีวางลงไฟล์หลัก</h3>
+  <ol>
+    <li>สำรองไฟล์หลัก <code>ทะเบียนรถและรายการซ่อม … iso.xlsx</code> ก่อน</li>
+    <li>ในแต่ละชีต M1/M2/M3 ของไฟล์หลัก ลบข้อมูลตั้งแต่ <b>แถว 3</b> ลงไป</li>
+    <li>คัดลอกคอลัมน์ <b>B ถึงคอลัมน์สุดท้าย</b> (แถว 3 ลงไป) จากไฟล์ Export → วางที่ <b>B3</b> ของชีตชื่อเดียวกัน</li>
+    <li>ตรวจว่าจำนวนแถวตรงกับชีต "ข้อมูลการ Export" และคอลัมน์ ISO คำนวณได้</li>
+  </ol>
+  <div class="warn">คอลัมน์ <b>ISO</b> (M1 คอลัมน์ M) ใช้สูตร XLOOKUP ไปที่ชีต <b>pm</b> ซึ่งอยู่ในไฟล์หลักเท่านั้น — ในไฟล์ Export จะแสดง error/ว่าง เป็นเรื่องปกติ จะคำนวณได้เมื่อวางลงไฟล์หลัก<br>รายการที่ยัง <b>รอตรวจ</b> จะไม่อยู่ในไฟล์ Export จนกว่าจะตัดสิน "นำเข้า"</div>
+
+  <h3 id="p2-kpi">📊 KPI คัน/เดือน และ 🕘 ประวัติ</h3>
+  <ul>
+    <li><b>KPI</b>: จำนวนคัน/ตู้ที่แจ้งซ่อม (ไม่นับซ้ำ) และจำนวนใบแจ้งซ่อม แยกเดือน × ประเภท — Export ได้</li>
+    <li><b>ประวัติ</b>: รายการนำเข้าแต่ละรอบ (ไฟล์ ผู้นำเข้า จำนวนเพิ่ม/อัปเดต/รอตรวจ ไฟล์สำรอง), ประวัติการเปลี่ยนแปลงข้อมูล (ค่าเดิม → ค่าใหม่) และดาวน์โหลดไฟล์ฐานข้อมูล (.sqlite)</li>
+  </ul>
+</section>
+
+<section id="p3">
+  <h2>4. หน้า 📏 เลขไมล์</h2>
+  <h3>นำเข้าเลขไมล์</h3>
+  <ol>
+    <li>แท็บ <b>📥 นำเข้าไฟล์</b> → อัปโหลดไฟล์ .xlsx ที่มีคอลัมน์ <b>Registration/ทะเบียน</b>, <b>Date/วันที่</b>, <b>km./เลขไมล์</b> (ไฟล์ที่ไม่มีหัวตารางแต่เรียงคอลัมน์แบบเดียวกันก็อ่านได้)</li>
+    <li>กด <span class="btn light">🔍 ตรวจไฟล์ (ยังไม่บันทึก)</span> → ดูแท็บ <b>ใหม่</b> และ <b>รอตรวจ</b></li>
+    <li>ติ๊ก <b>ตรวจผลแล้ว ยืนยันนำเข้า</b> → กด <span class="btn">💾 ยืนยันนำเข้าเลขไมล์</span></li>
+  </ol>
+  <p>กันซ้ำด้วย <b>ทะเบียน + วันที่</b> — นำเข้าไฟล์เดิมซ้ำได้ ไม่เกิดข้อมูลซ้ำ</p>
+  <h3>รายการที่เข้า "รอตรวจ"</h3>
+  <ul>
+    <li>เลขไมล์ไม่ใช่ตัวเลข หรือน้อยกว่า 10 กม.</li>
+    <li>ทะเบียน+วันที่เดียวกันแต่เลขไมล์ต่างกัน</li>
+    <li>เลขไมล์ลดลงจากค่าครั้งก่อน</li>
+  </ul>
+  <p>ที่แท็บ <b>⚠️ รอตรวจ</b>: กรอกเลขไมล์ที่ถูกต้อง (ถ้ามี) แล้วกด <span class="btn">นำเข้า</span> หรือ <span class="btn light">ไม่นำเข้า</span> — ถ้าค่าในไฟล์ไม่ใช่ตัวเลข ต้องกรอกเลขไมล์ก่อนจึงนำเข้าได้</p>
+  <div class="note">หมายเหตุที่ระบบแจ้งแต่ยังนำเข้า: เลขไมล์ต่ำกว่า 1,000 กม. หรือตั้งแต่ 1,000,000 กม. ขึ้นไป (มักเกิดจากหน้าปัดแบบ 6 หลักที่วนรอบ) — ควรตรวจกับหน้าปัดจริง</div>
+  <h3>ดูข้อมูล</h3>
+  <ul>
+    <li><b>📏 เลขไมล์ล่าสุด</b>: ค่าล่าสุดของแต่ละทะเบียน ค้นหาทะเบียนได้ Export ได้</li>
+    <li><b>🕘 ประวัติ</b>: เลขไมล์ทุกครั้งของทะเบียนที่ระบุ และรอบการนำเข้า</li>
+  </ul>
+</section>
+
+<section id="rules">
+  <h2>5. กฎของข้อมูล</h2>
+  <ul>
+    <li><b>กันซ้ำ</b>: ใบแจ้งซ่อมใช้ <b>เลขที่เอกสาร</b> เป็นคีย์ · เลขไมล์ใช้ <b>ทะเบียน + วันที่</b></li>
+    <li><b>ไม่เดาข้อมูล</b>: ค่าที่อ่านไม่ได้เก็บตามต้นฉบับ และแจ้งเป็นหมายเหตุ</li>
+    <li><b>ข้อมูลที่ไม่สอดคล้องกับตาราง</b> ไม่เข้าฐานหลัก — ไปที่ "รอตรวจ" ให้ DATA_OWNER ตัดสิน</li>
+    <li><b>ทุกการเปลี่ยนแปลงมีร่องรอย</b>: เก็บค่าเดิม ผู้นำเข้า ผู้ตัดสิน และเวลา</li>
+    <li><b>รหัสรถ</b>: หัวลาก/หางพ่วง = 7 ตัวท้ายของ "ทะเบียน / เบอร์ตู้" · ตู้เย็น = ข้อความหลัง "/" ตัวสุดท้าย</li>
+    <li>ห้ามนำข้อมูลออกไปเผยแพร่ภายนอก</li>
+  </ul>
+</section>
+
+<section id="backup">
+  <h2>6. สำรองและกู้คืน</h2>
+  <ul>
+    <li>ระบบสำรองฐานอัตโนมัติก่อนนำเข้าทุกครั้ง: <code>D:\MT_Speet\data\backup\Repair_Request_v2_ปีเดือนวัน_เวลา.sqlite</code></li>
+    <li>ไฟล์โปรแกรมเวอร์ชันก่อนอัปเดต เก็บที่ <code>D:\MT_Speet\backup\</code></li>
+  </ul>
+  <h3>กู้คืนฐานข้อมูล</h3>
+  <ol>
+    <li>ปิดหน้าต่างสีดำของโปรแกรม</li>
+    <li>เปลี่ยนชื่อ <code>data\Repair_Request_v2.sqlite</code> ปัจจุบันเก็บไว้ (เช่น เติม <code>_old</code>)</li>
+    <li>คัดลอกไฟล์จาก <code>data\backup\</code> ที่ต้องการ มาวางเป็น <code>data\Repair_Request_v2.sqlite</code></li>
+    <li>เปิดโปรแกรมใหม่ แล้วตรวจจำนวนในการ์ดด้านบน</li>
+  </ol>
+</section>
+
+<section id="trouble">
+  <h2>7. แก้ปัญหาที่พบบ่อย</h2>
+  <table>
+    <tr><th>อาการ</th><th>วิธีแก้</th></tr>
+    <tr><td>ดับเบิลคลิก .bat แล้วไม่มีอะไรเกิดขึ้น / Windows บล็อก</td><td>ไฟล์อาจถูก Smart App Control บล็อกเพราะคัดลอกมาจากที่อื่น — คลิกขวาไฟล์ → Properties → ติ๊ก <b>Unblock</b> (ถ้ามี) หรือสร้าง .bat ใหม่ในเครื่อง</td></tr>
+    <tr><td>หน้าต่างดำขึ้น "Python not found"</td><td>ติดตั้ง Python 3.11+ จาก python.org และติ๊ก <b>Add to PATH</b> ตอนติดตั้ง</td></tr>
+    <tr><td>หน้าต่างดำขึ้น error แล้วหยุด</td><td>เปิดไฟล์ <code>D:\MT_Speet\run_log.txt</code> ดูรายละเอียด แล้วส่งให้ผู้ดูแลระบบ</td></tr>
+    <tr><td>เบราว์เซอร์ไม่เปิดเอง</td><td>พิมพ์ <code>http://localhost:8501</code> (ถ้ามีโปรแกรมเปิดอยู่แล้ว อาจเป็น 8502)</td></tr>
+    <tr><td>หน้าฐานข้อมูลว่าง ทั้งที่เคยนำเข้า</td><td>ที่ <b>① ไฟล์ฐานข้อมูล</b> ในเมนูซ้าย: บนเครื่อง ตรวจ path ให้เป็น <code>…\data\Repair_Request_v2.sqlite</code> · บนเว็บ ต้อง Browse ไฟล์ .sqlite ก่อน</td></tr>
+    <tr><td>มุมบนเมนูซ้ายไม่ใช่ Web v1.6.2</td><td>ไฟล์โปรแกรมถูกทับด้วยตัวเก่า — ให้ผู้ดูแลระบบวางเวอร์ชันใหม่</td></tr>
+    <tr><td>คอลัมน์ ISO ในไฟล์ Export เป็น error</td><td>ปกติ — คำนวณได้เมื่อวางลงไฟล์หลักที่มีชีต pm</td></tr>
+    <tr><td>ปุ่มนำเข้ากดไม่ได้</td><td>ต้องกด "ตรวจไฟล์" ก่อน และติ๊กช่องยืนยัน · ถ้าไฟล์มี error หรือไม่มีรายการใหม่ ปุ่มจะปิด</td></tr>
+  </table>
+</section>
+
+<footer>Speed Fleet Maintenance · คู่มือสำหรับ GUI v1.6.2 · ปรับปรุง 22/11/2026 · เอกสารใช้ภายในบริษัท</footer>
+</main>
+</div>
+<script>
+/* ลิงก์สารบัญเลื่อนภายในคู่มือเท่านั้น (ไม่โหลดหน้าอื่น เมื่อฝังอยู่ใน GUI) */
+document.addEventListener('click', function (e) {
+  var a = e.target.closest('a[href^="#"]');
+  if (!a) return;
+  e.preventDefault();
+  var el = document.getElementById(a.getAttribute('href').slice(1));
+  if (el) el.scrollIntoView({behavior: 'smooth', block: 'start'});
+});
+</script>
+</body>
+</html>

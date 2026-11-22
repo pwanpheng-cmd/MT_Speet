@@ -2,6 +2,7 @@
 gatherUsageStats = false
 
 [server]
+enableStaticServing = true
 fileWatcherType = "none"
 maxUploadSize = 200
 

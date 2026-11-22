@@ -27,6 +27,96 @@ SHOW = ["doc_no", "asset_type", "report_date", "report_time", "asset_code", "bra
         "open_date", "data_note", "source_sheet", "source_row"]
 
 
+# ----------------------------------------------------------------------------- ① เลือกไฟล์ฐานข้อมูล (ใช้ร่วม 2 หน้า)
+def _pick_db_file(initial):
+    """เปิดหน้าต่าง Browse ไฟล์ .sqlite ของ Windows (เฉพาะรันบนเครื่อง)"""
+    import subprocess, sys
+    init_dir = os.path.dirname(initial) if initial else ""
+    code = ("import tkinter as tk; from tkinter import filedialog; r=tk.Tk(); r.withdraw(); "
+            "r.wm_attributes('-topmost',1); "
+            f"p=filedialog.askopenfilename(initialdir={init_dir!r}, title='เลือกไฟล์ฐานข้อมูล', "
+            "filetypes=[('SQLite database','*.sqlite *.db *.sqlite3'),('All files','*.*')]); print(p or '', end='')")
+    try:
+        res = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=600, encoding="utf-8")
+        return os.path.normpath(res.stdout.strip()) if res.stdout.strip() else None
+    except Exception as e:
+        st.sidebar.error(f"เปิดหน้าต่างเลือกไฟล์ไม่ได้: {e} — พิมพ์ path เองได้")
+        return None
+
+
+def _sha(path):
+    import hashlib
+    if not path or not os.path.exists(path):
+        return None
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def db_selector(is_local, app_dir, full):
+    """แสดงส่วน '① ไฟล์ฐานข้อมูล' ใน sidebar แล้วคืน path ฐานข้อมูลที่ใช้
+    - บนเครื่อง: Browse ไฟล์ .sqlite → อ่าน/บันทึกที่ไฟล์นั้นโดยตรง (สำรองอัตโนมัติก่อนนำเข้า)
+    - บนเว็บ:   Browse (อัปโหลด) ไฟล์ .sqlite → ทำงานบนสำเนาชั่วคราว → ดาวน์โหลดกลับไปวางทับไฟล์เดิม"""
+    ss = st.session_state
+    with st.sidebar:
+        st.markdown("**① ไฟล์ฐานข้อมูล**")
+        if is_local:
+            ss.setdefault("rr_db", os.path.join(app_dir, "data", "Repair_Request_v2.sqlite"))   # ไม่ใช่ key ของ widget → คงค่าข้ามหน้า
+            c1, c2 = st.columns([4, 1.4])
+            if c2.button("📁", key="b_db", help="Browse ไฟล์ฐานข้อมูล (.sqlite)", **full):
+                p = _pick_db_file(ss["rr_db"])
+                if p:
+                    ss["rr_db"] = p
+                    st.rerun()
+            v = c1.text_input("ไฟล์ฐานข้อมูล (.sqlite)", value=ss["rr_db"], label_visibility="collapsed").strip().strip('"')
+            if v and v != ss["rr_db"]:
+                ss["rr_db"] = v
+            db = ss["rr_db"]
+            if os.path.exists(db):
+                st.caption(f"ใช้ไฟล์นี้โดยตรง · {os.path.getsize(db)/1024/1024:,.1f} MB · สำรองอัตโนมัติที่ backup\\ ก่อนนำเข้าทุกครั้ง")
+            else:
+                st.warning("ยังไม่มีไฟล์นี้ — จะสร้างฐานใหม่เมื่อนำเข้าไฟล์ชุดแรก")
+            return db
+
+        # ---- เว็บ
+        if "rr_db_tmp" not in ss:
+            ss["rr_db_tmp"] = os.path.join(tempfile.mkdtemp(prefix="rrdb_"), "Repair_Request_v2.sqlite")
+            ss["rr_db_name"] = None
+        db = ss["rr_db_tmp"]
+        up = st.file_uploader("Browse ไฟล์ฐานข้อมูล (.sqlite) จากเครื่อง", type=["sqlite", "db", "sqlite3"], key="rr_db_up")
+        if up is not None:
+            fid = getattr(up, "file_id", None) or f"{up.name}:{up.size}"
+            if ss.get("rr_db_fid") != fid:
+                data = up.getvalue()
+                if not data.startswith(b"SQLite format 3"):
+                    st.error("ไฟล์นี้ไม่ใช่ฐานข้อมูล SQLite")
+                else:
+                    with open(db, "wb") as fh:
+                        fh.write(data)
+                    ss["rr_db_fid"], ss["rr_db_name"] = fid, up.name
+                    ss["rr_db_sha0"] = _sha(db)
+                    ss["rr_db_at"] = datetime.now().strftime("%d/%m/%Y %H:%M")
+        if ss.get("rr_db_name"):
+            st.caption(f"กำลังใช้: **{ss['rr_db_name']}** (เปิดเมื่อ {ss['rr_db_at']}) — เป็นสำเนาชั่วคราวบนเว็บ")
+            changed = _sha(db) != ss.get("rr_db_sha0")
+            if changed:
+                st.warning("มีการเปลี่ยนแปลงในฐานข้อมูล — ดาวน์โหลดแล้ววางทับไฟล์เดิมในเครื่อง (สำรองไฟล์เดิมก่อน) "
+                           "ไม่เช่นนั้นข้อมูลจะหายเมื่อปิดเว็บ")
+            with open(db, "rb") as fh:
+                st.download_button("ดาวน์โหลดฐานข้อมูล (บันทึกกลับเครื่อง)", fh.read(), file_name=ss["rr_db_name"],
+                                   icon="⬇️", type="primary" if changed else "secondary", key="rr_db_dl", **full)
+        else:
+            st.info("ยังไม่ได้เลือกไฟล์ — Browse ไฟล์ Repair_Request_v2.sqlite จากเครื่อง (เช่น D:\\MT_Speet\\data) "
+                    "หรือใช้ฐานว่างชั่วคราวเพื่อตรวจไฟล์")
+            if os.path.exists(db):
+                with open(db, "rb") as fh:
+                    st.download_button("ดาวน์โหลดฐานข้อมูลชั่วคราว", fh.read(), file_name="Repair_Request_v2.sqlite",
+                                       icon="⬇️", key="rr_db_dl0", **full)
+        return db
+
+
 def _th(df):
     df = df.copy()
     for c in ("report_date", "open_date"):
@@ -58,23 +148,7 @@ def _excel_bytes(sheets):
 
 def render(is_local, user, full, app_dir, kpi_card):
     ss = st.session_state
-    default_db = os.path.join(app_dir, "data", "Repair_Request_v2.sqlite")
-    if is_local:
-        ss.setdefault("rr_db", default_db)
-    else:
-        if "rr_db_tmp" not in ss:
-            ss["rr_db_tmp"] = os.path.join(tempfile.mkdtemp(prefix="rrdb_"), "Repair_Request_v2.sqlite")
-        ss["rr_db"] = ss["rr_db_tmp"]
-
-    with st.sidebar:
-        st.markdown("**ฐานข้อมูลใบแจ้งซ่อม**")
-        if is_local:
-            st.text_input("ไฟล์ฐานข้อมูล (.sqlite)", key="rr_db")
-            st.caption("สำรองไฟล์อัตโนมัติไว้ที่โฟลเดอร์ backup ข้างไฟล์ฐานข้อมูล ก่อนนำเข้าทุกครั้ง")
-        else:
-            st.warning("โหมด Cloud: ฐานข้อมูลเป็นแบบชั่วคราวเฉพาะ session นี้ (หายเมื่อปิด/รีสตาร์ท) "
-                       "ใช้สำหรับตรวจไฟล์และ Export — บันทึกฐานข้อมูลหลักให้เปิดแอปบนเครื่อง")
-    db = ss["rr_db"]
+    db = db_selector(is_local, app_dir, full)
 
     st.markdown('<div class="app-hero"><h1>ฐานข้อมูลใบแจ้งซ่อม</h1>'
                 '<p>หัวลาก · หางพ่วง · ตู้เย็น — นำเข้าแบบกันซ้ำด้วยเลขที่เอกสาร · แถวที่ข้อมูลไม่สอดคล้องรอ DATA_OWNER ตัดสิน</p></div>',
@@ -187,6 +261,17 @@ def render(is_local, user, full, app_dir, kpi_card):
 
     # ------------------------------------------------------------------ data
     with t_data:
+        with st.container(border=True):
+            st.markdown("**Export สำหรับอัปเดตไฟล์หลัก** — ชีต `M1_ซ่อมรถ / M2_ซ่อมหาง / M3_ซ่อมตู้` รูปแบบเดียวกับไฟล์เดิม "
+                        "(คอลัมน์ B–H ข้อมูล, I–M สูตรเดิม, 1 แถว = 1 เลขเอกสาร) — ไม่รวมรายการรอตรวจ")
+            if st.button("สร้างไฟล์ M1/M2/M3", icon="📤", key="rr_mexp"):
+                blob, cnt = rr.export_m_sheets(db)
+                ss["rr_mexp_blob"] = (f"อัปเดต_M1_M2_M3_{datetime.now():%Y%m%d_%H%M}.xlsx", blob, cnt)
+            if ss.get("rr_mexp_blob"):
+                n, blob, cnt = ss["rr_mexp_blob"]
+                st.caption(" · ".join(f"{k} {v:,} แถว" for k, v in cnt.items()))
+                st.download_button(f"ดาวน์โหลด {n}", blob, file_name=n, icon="⬇️", type="primary",
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         c1, c2, c3, c4 = st.columns([1.2, 1.2, 1.6, 1.2])
         ft = c1.multiselect("ประเภท", TYPES, key="rr_ft", placeholder="ทุกประเภท")
         months = [r["m"] for r in rr.fetch(db, "SELECT DISTINCT report_month m FROM repair_request ORDER BY 1")]
@@ -269,3 +354,102 @@ def render(is_local, user, full, app_dir, kpi_card):
         if is_local and os.path.exists(db):
             with open(db, "rb") as fh:
                 st.download_button("ดาวน์โหลดไฟล์ฐานข้อมูล (.sqlite)", fh.read(), file_name=os.path.basename(db), icon="🗄️")
+
+
+# ============================================================================= หน้าเลขไมล์
+def render_mileage(is_local, user, full, app_dir, kpi_card):
+    import json
+    ss = st.session_state
+    db = db_selector(is_local, app_dir, full)
+    st.markdown('<div class="app-hero"><h1>เลขไมล์</h1><p>นำเข้าเลขไมล์รายคัน (ทะเบียน · วันที่ · กม.) — '
+                'กันซ้ำด้วย ทะเบียน+วันที่ · ค่าผิดปกติรอ DATA_OWNER ตัดสิน</p></div>', unsafe_allow_html=True)
+    stat = rr.mileage_fetch(db, "SELECT COUNT(*) n, COUNT(DISTINCT asset_code) a, MAX(reading_date) d FROM mileage_reading")[0]
+    nrev = rr.mileage_fetch(db, "SELECT COUNT(*) n FROM mileage_review WHERE decision IS NULL")[0]["n"]
+    k = st.columns(4)
+    kpi_card(k[0], "บันทึกเลขไมล์", f"{stat['n']:,}", "รายการ")
+    kpi_card(k[1], "จำนวนคัน", f"{stat['a']:,}", "")
+    kpi_card(k[2], "วันที่ล่าสุด", stat["d"] or "-", "")
+    kpi_card(k[3], "รอตรวจ", f"{nrev:,}", "", "warn" if nrev else "ok")
+    st.write("")
+    t1, t2, t3, t4 = st.tabs(["📥 นำเข้าไฟล์", "📏 เลขไมล์ล่าสุด", f"⚠️ รอตรวจ ({nrev})", "🕘 ประวัติ"])
+    with t1:
+        up = st.file_uploader("ไฟล์เลขไมล์ (.xlsx) — คอลัมน์ Registration/ทะเบียน, Date/วันที่, km./เลขไมล์", type=["xlsx", "xlsm"], key="mi_up")
+        if st.button("ตรวจไฟล์ (ยังไม่บันทึก)", icon="🔍", disabled=up is None, key="mi_chk") and up is not None:
+            data = up.getvalue()
+            wb = rr.read_mileage_workbook(io.BytesIO(data))
+            con = rr.connect_mileage(db) if os.path.exists(db) else None
+            if con is None:
+                con = sqlite3.connect(":memory:"); con.row_factory = sqlite3.Row
+                con.executescript(rr.SCHEMA_SQL); con.executescript(rr.MILEAGE_SQL)
+            plan = rr.analyze_mileage(con, wb["records"]) if wb["records"] else None
+            con.close()
+            ss["mi_an"] = dict(name=up.name, sha=rr.file_sha256(data), wb=wb, plan=plan, db=db)
+        an = ss.get("mi_an")
+        if an and an["db"] == db:
+            for e in an["wb"]["errors"]:
+                st.error(e)
+            st.caption("ชีตที่อ่าน: " + " · ".join(f"{x['sheet']} ({x['rows']} แถว{'' if x['header'] else ', ไม่มีหัวตาราง'})" for x in an["wb"]["sheets"]))
+            plan = an["plan"]
+            if plan:
+                m = st.columns(5)
+                kpi_card(m[0], "ใหม่", f"{len(plan['new']):,}", "", "ok")
+                kpi_card(m[1], "มีแล้ว ไม่เปลี่ยน", f"{len(plan['unchanged']):,}", "")
+                kpi_card(m[2], "รอตรวจ", f"{len(plan['review']):,}", "", "warn" if plan["review"] else "ok")
+                kpi_card(m[3], "ซ้ำในไฟล์", f"{len(plan['dup_in_file']):,}", "ข้าม")
+                kpi_card(m[4], "เคยส่งตรวจแล้ว", f"{len(plan['review_known']):,}", "")
+                st.write("")
+                a1, a2 = st.tabs([f"ใหม่ ({len(plan['new'])})", f"รอตรวจ ({len(plan['review'])})"])
+                with a1:
+                    st.dataframe(pd.DataFrame([dict(ทะเบียน=r["asset_code"], วันที่=r["reading_date"], กม=r["km"], หมายเหตุ=r["data_note"] or "",
+                                                    ชีต=r["source_sheet"], แถว=r["source_row"]) for r in plan["new"]]), hide_index=True, **full)
+                with a2:
+                    st.dataframe(pd.DataFrame([dict(ทะเบียน=x["rec"]["asset_code"], วันที่=x["rec"]["reading_date"], ค่าในไฟล์=x["rec"]["km_raw"],
+                                                    เหตุผล=x["reason"]) for x in plan["review"]]), hide_index=True, **full)
+                ok = st.checkbox("ตรวจผลแล้ว ยืนยันนำเข้า", key="mi_ok")
+                n_act = len(plan["new"]) + len(plan["review"])
+                if st.button("ยืนยันนำเข้าเลขไมล์", type="primary", icon="💾", disabled=not ok or n_act == 0, key="mi_go"):
+                    ss["mi_last"] = rr.commit_mileage(db, an["wb"]["records"], an["name"], an["sha"], user)
+                    ss.pop("mi_an", None)
+                    st.rerun()
+                if n_act == 0:
+                    st.info("ไฟล์นี้อยู่ในฐานข้อมูลครบแล้ว")
+        if ss.get("mi_last"):
+            l = ss["mi_last"]
+            st.success(f"นำเข้าแล้ว (batch {l['batch_id']}): เพิ่ม {l['rows_inserted']:,} · รอตรวจ {l['rows_review']:,} · "
+                       f"ไม่เปลี่ยน {l['rows_unchanged']:,} · ซ้ำในไฟล์ {l['rows_dup_in_file']:,}" + (f"\n\nสำรอง: `{l['backup']}`" if l.get("backup") else ""))
+    with t2:
+        df = pd.DataFrame(rr.mileage_fetch(db, "SELECT asset_code ทะเบียน, reading_date วันที่, km กม, data_note หมายเหตุ FROM v_mileage_latest ORDER BY asset_code"))
+        q = st.text_input("ค้นหาทะเบียน", key="mi_q")
+        if q and len(df):
+            df = df[df["ทะเบียน"].str.contains(q, regex=False)]
+        if len(df):
+            df["วันที่"] = pd.to_datetime(df["วันที่"]).dt.strftime("%d/%m/%Y")
+            df = df.astype(object).where(df.notna(), "")
+        st.dataframe(df, hide_index=True, height=480, column_config={"กม": st.column_config.NumberColumn(format="%,d")}, **full)
+        if len(df):
+            st.download_button("Export เลขไมล์ล่าสุด (Excel)", _excel_bytes({"เลขไมล์ล่าสุด": df}),
+                               file_name=f"เลขไมล์ล่าสุด_{datetime.now():%Y%m%d_%H%M}.xlsx", icon="⬇️")
+    with t3:
+        rows = rr.mileage_fetch(db, "SELECT * FROM mileage_review WHERE decision IS NULL ORDER BY review_id")
+        st.caption("ค่าที่ใช้ไม่ได้/ขัดกับข้อมูลเดิม — กรอกเลขไมล์ที่ถูกต้องจากเอกสารจริงแล้วกดนำเข้า หรือกดไม่นำเข้า (ระบบไม่เดาค่าแทน)")
+        if not rows:
+            st.success("ไม่มีรายการรอตรวจ")
+        for r in rows:
+            with st.container(border=True):
+                st.markdown(f"**{r['asset_code']}** · วันที่ {r['reading_date']} · ค่าในไฟล์ `{r['km_raw']}`  \n{r['reason']}")
+                c1, c2, c3 = st.columns([2, 1, 1])
+                kmv = c1.number_input("เลขไมล์ที่ถูกต้อง (ถ้าต้องการแก้)", min_value=0, step=1, value=None, key=f"mi_km_{r['review_id']}")
+                if c2.button("นำเข้า", key=f"mi_y_{r['review_id']}", type="primary", **full):
+                    ok, msg = rr.decide_mileage_review(db, r["review_id"], "นำเข้า", user or ("local" if is_local else "user"),
+                                                       km_override=int(kmv) if kmv is not None else None)
+                    (st.toast if ok else st.error)(msg)
+                    if ok:
+                        st.rerun()
+                if c3.button("ไม่นำเข้า", key=f"mi_n_{r['review_id']}", **full):
+                    rr.decide_mileage_review(db, r["review_id"], "ไม่นำเข้า", user or ("local" if is_local else "user"))
+                    st.rerun()
+    with t4:
+        st.dataframe(pd.DataFrame(rr.mileage_fetch(db, "SELECT batch_id, file_name ไฟล์, imported_by ผู้นำเข้า, imported_at เวลา, rows_read อ่าน, rows_dup_in_file ซ้ำในไฟล์, rows_inserted เพิ่ม, rows_unchanged ไม่เปลี่ยน, rows_review รอตรวจ, backup_path ไฟล์สำรอง FROM mileage_batch ORDER BY batch_id DESC")), hide_index=True, **full)
+        q2 = st.text_input("ดูประวัติเลขไมล์ทะเบียน", key="mi_h")
+        if q2:
+            st.dataframe(pd.DataFrame(rr.mileage_fetch(db, "SELECT reading_date วันที่, km กม, data_note หมายเหตุ, source_file ไฟล์, approved_by ผู้อนุมัติ FROM mileage_reading WHERE asset_code=? ORDER BY reading_date", q2.strip())), hide_index=True, **full)

@@ -18,7 +18,7 @@ import streamlit as st
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vehicle_report_app as core  # noqa: E402
 
-WEB_VERSION = "1.5.0"
+WEB_VERSION = "1.6.2"
 import inspect as _inspect
 # ใช้ได้ทั้ง Streamlit รุ่นใหม่ (width="stretch") และรุ่นเก่า (**FULL)
 FULL = ({"width": "stretch"} if "width" in _inspect.signature(st.button).parameters
@@ -92,6 +92,26 @@ def _setup_screen():
             st.caption("เพิ่มผู้ใช้หลายคน: สร้างทีละคน แล้ววางเฉพาะบรรทัดชื่อผู้ใช้ไว้ใต้ [users] บรรทัดเดียวกัน")
     st.markdown("**2) วางใน Secrets** — Streamlit Cloud: *Manage app → Settings → Secrets* → วางข้อความ → Save "
                 "(บนเครื่อง: ไฟล์ `.streamlit/secrets.toml`) แล้วรีเฟรชหน้านี้")
+    st.stop()
+
+
+# ---- standalone manual (opened in a new tab via ?manual=1) — does not need static file serving
+MANUAL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "manual.html")
+MANUAL_URL = "./?manual=1"
+if st.query_params.get("manual"):
+    st.markdown("<style>header, [data-testid='stSidebar'], [data-testid='stSidebarCollapsedControl'], footer {display:none !important}"
+                ".block-container {padding:0 !important; max-width:100% !important}"
+                "iframe {height: calc(100vh - 8px) !important; border:0}</style>", unsafe_allow_html=True)
+    if os.path.exists(MANUAL_PATH):
+        with open(MANUAL_PATH, "r", encoding="utf-8") as fh_:
+            _mhtml = fh_.read()
+        if hasattr(st, "iframe"):
+            st.iframe(_mhtml, height=900)
+        else:
+            import streamlit.components.v1 as _components
+            _components.html(_mhtml, height=900, scrolling=True)
+    else:
+        st.error(f"ไม่พบไฟล์คู่มือ: {MANUAL_PATH}")
     st.stop()
 
 
@@ -290,7 +310,7 @@ def style_rows(key, df):
 
 
 # ----------------------------------------------------------------------------- navigation
-PAGES = ["🚛 รายงานซ่อมรายคัน", "🗂️ ฐานข้อมูลใบแจ้งซ่อม"]
+PAGES = ["🚛 รายงานซ่อมรายคัน", "🗂️ ฐานข้อมูลใบแจ้งซ่อม", "📏 เลขไมล์", "📖 คู่มือการใช้งาน"]
 with st.sidebar:
     st.markdown("### 🚛 Speed Fleet Maintenance")
     st.caption(f"Web v{WEB_VERSION} · report engine v{core.APP_VERSION}")
@@ -302,11 +322,32 @@ with st.sidebar:
                 del st.session_state[k_]
             st.rerun()
     PAGE = st.radio("เมนู", PAGES, key="page", label_visibility="collapsed")
+    st.link_button("📖 เปิดคู่มือ (แท็บใหม่)", MANUAL_URL, **FULL)
     st.divider()
 
-if PAGE == PAGES[1]:
+if PAGE == PAGES[3]:
+    st.markdown('<div class="app-hero"><h1>📖 คู่มือการใช้งาน</h1><p>วิธีใช้ทั้ง 3 หน้า · Export M1/M2/M3 · เลขไมล์ · สำรอง/กู้คืน · แก้ปัญหา</p></div>',
+                unsafe_allow_html=True)
+    if os.path.exists(MANUAL_PATH):
+        with open(MANUAL_PATH, "r", encoding="utf-8") as fh_:
+            _html = fh_.read()
+        c1_, c2_, _ = st.columns([1.4, 1.4, 4])
+        c1_.link_button("เปิดคู่มือในแท็บใหม่", MANUAL_URL, icon="↗️", **FULL)
+        c2_.download_button("ดาวน์โหลดคู่มือ (.html)", _html.encode("utf-8"), file_name="คู่มือ_Speed_Fleet_Maintenance.html",
+                            mime="text/html", icon="⬇️", **FULL)
+        if hasattr(st, "iframe"):
+            st.iframe(_html, height=1400)
+        else:
+            import streamlit.components.v1 as _components
+            _components.html(_html, height=1400, scrolling=True)
+    else:
+        st.error(f"ไม่พบไฟล์คู่มือ: {MANUAL_PATH}")
+    st.stop()
+
+if PAGE in PAGES[1:3]:
     import repair_request_page
-    repair_request_page.render(IS_LOCAL, CURRENT_USER, FULL, os.path.dirname(os.path.abspath(__file__)), kpi)
+    (repair_request_page.render if PAGE == PAGES[1] else repair_request_page.render_mileage)(
+        IS_LOCAL, CURRENT_USER, FULL, os.path.dirname(os.path.abspath(__file__)), kpi)
     st.stop()
 
 # ----------------------------------------------------------------------------- state

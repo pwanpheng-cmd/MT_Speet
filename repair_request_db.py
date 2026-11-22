@@ -410,3 +410,335 @@ def fetch(db_path, sql, *args):
 
 def file_sha256(data_bytes):
     return hashlib.sha256(data_bytes).hexdigest()
+
+
+# ============================================================================= เลขไมล์ (mileage)
+MILEAGE_SQL = """
+CREATE TABLE IF NOT EXISTS mileage_batch (
+    batch_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_name     TEXT NOT NULL,
+    file_sha256   TEXT NOT NULL,
+    imported_by   TEXT,
+    imported_at   TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    rows_read     INTEGER NOT NULL DEFAULT 0,
+    rows_dup_in_file INTEGER NOT NULL DEFAULT 0,
+    rows_inserted INTEGER NOT NULL DEFAULT 0,
+    rows_unchanged INTEGER NOT NULL DEFAULT 0,
+    rows_review   INTEGER NOT NULL DEFAULT 0,
+    backup_path   TEXT,
+    note          TEXT
+);
+CREATE TABLE IF NOT EXISTS mileage_reading (
+    reading_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    asset_code    TEXT NOT NULL,
+    reading_date  TEXT NOT NULL,
+    km            INTEGER NOT NULL CHECK (km >= 0),
+    data_note     TEXT,
+    source_file   TEXT,
+    source_sheet  TEXT,
+    source_row    INTEGER,
+    batch_id      INTEGER NOT NULL REFERENCES mileage_batch(batch_id),
+    approved_by   TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_mileage_asset_date ON mileage_reading(asset_code, reading_date);
+CREATE TABLE IF NOT EXISTS mileage_review (
+    review_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id      INTEGER NOT NULL REFERENCES mileage_batch(batch_id),
+    asset_code    TEXT NOT NULL,
+    reading_date  TEXT,
+    km_raw        TEXT,
+    reason        TEXT NOT NULL,
+    incoming_json TEXT NOT NULL,
+    incoming_hash TEXT NOT NULL,
+    decision      TEXT CHECK (decision IN ('นำเข้า','ไม่นำเข้า') OR decision IS NULL),
+    decided_by    TEXT,
+    decided_at    TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE VIEW IF NOT EXISTS v_mileage_latest AS
+SELECT m.asset_code, m.reading_date, m.km, m.data_note
+FROM mileage_reading m
+JOIN (SELECT asset_code, MAX(reading_date) d FROM mileage_reading GROUP BY asset_code) x
+  ON x.asset_code = m.asset_code AND x.d = m.reading_date;
+"""
+
+_PLATE_HDR = ("registration", "ทะเบียน", "ทะเบียนรถ", "plate")
+_DATE_HDR = ("date", "วันที่")
+_KM_HDR = ("km.", "km", "เลขไมล์", "กม.", "mileage", "odometer")
+
+
+def connect_mileage(db_path):
+    con = connect(db_path)
+    con.executescript(MILEAGE_SQL)
+    return con
+
+
+def read_mileage_workbook(src):
+    """อ่านทุกชีต: หาแถวหัวตาราง (Registration/Date/km.) หรือถ้าไม่มีหัว ใช้รูปแบบแถว (ทะเบียน, วันที่, ตัวเลข)"""
+    import openpyxl
+    wb = openpyxl.load_workbook(src, read_only=True, data_only=True)
+    out = dict(records=[], sheets=[], errors=[])
+    for ws in wb.worksheets:
+        rows = list(ws.iter_rows(values_only=True))
+        cp = cd = ck = None
+        start = 0
+        for i, r in enumerate(rows[:10]):
+            low = [str(v).strip().lower() if v is not None else "" for v in r]
+            if any(x in _PLATE_HDR for x in low) and any(x in _KM_HDR for x in low):
+                cp = next(j for j, x in enumerate(low) if x in _PLATE_HDR)
+                ck = next(j for j, x in enumerate(low) if x in _KM_HDR)
+                cd = next((j for j, x in enumerate(low) if x in _DATE_HDR), None)
+                start = i + 1
+                break
+        headerless = cp is None
+        if headerless:          # ไม่มีหัวตาราง: ยอมรับเมื่อแถวแรกที่มีข้อมูลเป็น (ทะเบียน, วันที่, ตัวเลข)
+            first = next((r for r in rows if r and r[0] not in (None, "")), None)
+            if not (first and len(first) >= 3 and re.fullmatch(r"\d{2}-\d{4}", str(first[0]).strip())
+                    and isinstance(first[1], (dt.datetime, dt.date))):
+                continue
+            cp, cd, ck = 0, 1, 2
+        n = 0
+        for j, r in enumerate(rows[start:], start=start + 1):
+            if not r or cp >= len(r) or r[cp] in (None, ""):
+                continue
+            plate = str(r[cp]).strip()
+            rd = _d(r[cd]) if cd is not None and cd < len(r) else None
+            kmv = r[ck] if ck < len(r) else None
+            flags, notes = [], []
+            if not re.fullmatch(r"\d{2}-\d{4}", plate):
+                flags.append(f"ทะเบียนผิดรูปแบบ: {plate}")
+            if not rd:
+                flags.append("ไม่มีวันที่")
+            km = None
+            if isinstance(kmv, bool) or kmv in (None, ""):
+                flags.append("ไม่มีเลขไมล์")
+            elif isinstance(kmv, (int, float)) and float(kmv).is_integer():
+                km = int(kmv)
+                if km < 10:
+                    flags.append(f"เลขไมล์ {km} กม. (น่าจะไม่ใช่ค่าจริง)")
+                elif km < 1000:
+                    notes.append(f"เลขไมล์ต่ำ {km:,} กม. (อาจเปลี่ยนเครื่อง/เรือนไมล์ใหม่)")
+                elif km >= 1_000_000:
+                    notes.append("เกิน 1,000,000 กม.")
+            else:
+                flags.append(f"เลขไมล์ไม่ใช่ตัวเลข: {kmv}")
+            rec = dict(asset_code=plate, reading_date=rd, km=km, km_raw=None if kmv is None else str(kmv),
+                       source_sheet=ws.title, source_row=j, flags="; ".join(flags) or None, data_note="; ".join(notes) or None)
+            rec["hash"] = hashlib.sha1(f"{plate}|{rd}|{rec['km_raw']}".encode()).hexdigest()
+            out["records"].append(rec)
+            n += 1
+        out["sheets"].append(dict(sheet=ws.title, rows=n, header=not headerless))
+    if not out["records"]:
+        out["errors"].append("ไม่พบข้อมูลเลขไมล์ (ต้องมีคอลัมน์ ทะเบียน/Registration, วันที่/Date, km./เลขไมล์)")
+    return out
+
+
+def analyze_mileage(con, records):
+    plan = dict(new=[], unchanged=[], review=[], review_known=[], dup_in_file=[])
+    groups = {}
+    for r in records:
+        groups.setdefault((r["asset_code"], r["reading_date"]), []).append(r)
+    known_assets = {x[0] for x in con.execute("SELECT DISTINCT asset_code FROM repair_request")}
+    done = set()
+    for r in records:
+        key = (r["asset_code"], r["reading_date"])
+        if key in done:
+            if len({x["km_raw"] for x in groups[key]}) == 1:
+                plan["dup_in_file"].append(r)
+            continue
+        done.add(key)
+        variants = groups[key]
+        kms = sorted({x["km_raw"] for x in variants})
+        if len(kms) > 1:
+            ih = hashlib.sha1("|".join(x["hash"] for x in variants).encode()).hexdigest()
+            rv = dict(rec=r, reason=f"วันเดียวกันในไฟล์มีหลายค่า: {', '.join(kms)}", hash=ih, variants=variants)
+        elif r["flags"]:
+            rv = dict(rec=r, reason=r["flags"], hash=r["hash"])
+        else:
+            rv = None
+            old = con.execute("SELECT km FROM mileage_reading WHERE asset_code=? AND reading_date=?", key).fetchone()
+            if old is not None:
+                if old[0] == r["km"]:
+                    plan["unchanged"].append(r)
+                    continue
+                rv = dict(rec=r, reason=f"มีเลขไมล์วันนี้อยู่แล้ว {old[0]:,} แต่ไฟล์เป็น {r['km']:,}", hash=r["hash"])
+            else:
+                prev = con.execute("SELECT reading_date, km FROM mileage_reading WHERE asset_code=? AND reading_date<? "
+                                   "ORDER BY reading_date DESC LIMIT 1", key).fetchone()
+                if prev is not None and r["km"] < prev[1]:
+                    rv = dict(rec=r, reason=f"ต่ำกว่าครั้งก่อน ({prev[1]:,} กม. เมื่อ {prev[0]}) — เรือนไมล์ถอยหลัง/เปลี่ยนเครื่อง?", hash=r["hash"])
+        if rv:
+            if con.execute("SELECT 1 FROM mileage_review WHERE asset_code=? AND incoming_hash=? AND (decision IS NULL OR decision='ไม่นำเข้า')",
+                           (r["asset_code"], rv["hash"])).fetchone():
+                plan["review_known"].append(r)
+            else:
+                plan["review"].append(rv)
+            continue
+        if known_assets and r["asset_code"] not in known_assets:
+            r = dict(r, data_note="; ".join(x for x in (r["data_note"], "ไม่พบทะเบียนนี้ในฐานใบแจ้งซ่อม") if x))
+        plan["new"].append(r)
+    return plan
+
+
+def _ins_mileage(con, r, bid, file_name, approved_by=None):
+    con.execute("INSERT INTO mileage_reading(asset_code,reading_date,km,data_note,source_file,source_sheet,source_row,batch_id,approved_by) "
+                "VALUES (?,?,?,?,?,?,?,?,?)", (r["asset_code"], r["reading_date"], r["km"], r["data_note"], file_name,
+                                               r["source_sheet"], r["source_row"], bid, approved_by))
+
+
+def commit_mileage(db_path, records, file_name, sha, user=None):
+    bpath = backup_db(db_path)
+    con = connect_mileage(db_path)
+    try:
+        plan = analyze_mileage(con, records)
+        with con:
+            bid = con.execute("INSERT INTO mileage_batch(file_name,file_sha256,imported_by,backup_path) VALUES (?,?,?,?)",
+                              (file_name, sha, user, bpath)).lastrowid
+            for r in plan["new"]:
+                _ins_mileage(con, r, bid, file_name)
+            for rv in plan["review"]:
+                r = rv["rec"]
+                con.execute("INSERT INTO mileage_review(batch_id,asset_code,reading_date,km_raw,reason,incoming_json,incoming_hash) VALUES (?,?,?,?,?,?,?)",
+                            (bid, r["asset_code"], r["reading_date"], r["km_raw"], rv["reason"],
+                             json.dumps(rv.get("variants") or r, ensure_ascii=False), rv["hash"]))
+            st = dict(rows_read=len(records), rows_dup_in_file=len(plan["dup_in_file"]), rows_inserted=len(plan["new"]),
+                      rows_unchanged=len(plan["unchanged"]), rows_review=len(plan["review"]))
+            con.execute("UPDATE mileage_batch SET " + ",".join(f"{k}=?" for k in st) + " WHERE batch_id=?", list(st.values()) + [bid])
+        return dict(batch_id=bid, backup=bpath, review_known=len(plan["review_known"]), **st)
+    finally:
+        con.close()
+
+
+def decide_mileage_review(db_path, review_id, decision, user, km_override=None, chosen_index=0):
+    """นำเข้า: ใช้ค่าตามไฟล์ (หรือ km_override ที่ผู้ตัดสินกรอกจากเอกสารจริง) ; ไม่นำเข้า: ปิดรายการ"""
+    con = connect_mileage(db_path)
+    try:
+        rv = con.execute("SELECT * FROM mileage_review WHERE review_id=?", (review_id,)).fetchone()
+        if rv is None or rv["decision"]:
+            return False, "รายการนี้ถูกตัดสินแล้วหรือไม่พบ"
+        with con:
+            if decision == "นำเข้า":
+                data = json.loads(rv["incoming_json"])
+                r = data[chosen_index] if isinstance(data, list) else data
+                km = km_override if km_override is not None else r.get("km")
+                if km is None or not r.get("reading_date") or not re.fullmatch(r"\d{2}-\d{4}", r["asset_code"]):
+                    return False, "นำเข้าไม่ได้: ต้องมีทะเบียนถูกรูปแบบ วันที่ และเลขไมล์เป็นตัวเลข (กรอกเลขไมล์ที่ถูกต้อง)"
+                note = f"อนุมัติโดย {user}: {rv['reason']}" + (f" ; แก้เลขไมล์เป็น {km:,}" if km_override is not None else "")
+                r = dict(r, km=int(km), data_note=note)
+                con.execute("DELETE FROM mileage_reading WHERE asset_code=? AND reading_date=?", (r["asset_code"], r["reading_date"]))
+                file_name = con.execute("SELECT file_name FROM mileage_batch WHERE batch_id=?", (rv["batch_id"],)).fetchone()[0]
+                _ins_mileage(con, r, rv["batch_id"], file_name, approved_by=user)
+            con.execute("UPDATE mileage_review SET decision=?, decided_by=?, decided_at=datetime('now','localtime') WHERE review_id=?",
+                        (decision, user, review_id))
+        return True, "บันทึกแล้ว"
+    finally:
+        con.close()
+
+
+def mileage_fetch(db_path, sql, *args):
+    con = connect_mileage(db_path)
+    try:
+        return [dict(r) for r in con.execute(sql, args)]
+    finally:
+        con.close()
+
+
+# ============================================================================= Export รูปแบบชีต M1/M2/M3
+M_SHEETS = {
+    "หัวลาก": dict(name="M1_ซ่อมรถ",
+                   headers=["ลำดับ", "เลขที่เอกสาร", "วันที่เปิดเอกสาร", "วันที่แจ้งซ่อม", "เวลา", "ทะเบียน / เบอร์ตู้",
+                            "รหัสพนักงาน", "สถานะซ่อม", "ทะเบียน", "ยี่ห้อ", "เดือน", "Index", "ISO"],
+                   formulas=['=RIGHT(F{r}, 7)', '=LEFT(F{r}, 6)', '=TEXT(D{r},"MMm-YY")', '=K{r}&":"&I{r}',
+                             '=_xlfn.XLOOKUP(I{r},pm!B:B,pm!I:I,"No",0)'],
+                   widths=[9.2, 18.1, 14.1, 14.1, 11.9, 29.2, 18.1, 12, 11.8, 9, 9, 12.2, 8]),
+    "หางพ่วง": dict(name="M2_ซ่อมหาง",
+                    headers=["ลำดับ", "เลขที่เอกสาร", "วันที่เปิดเอกสาร", "วันที่แจ้งซ่อม", "เวลา", "ทะเบียน / เบอร์ตู้",
+                             "รหัสพนักงาน", "สถานะซ่อม", "ทะเบียน", "ทะเบียน", "เดือน", "Index"],
+                    formulas=['=RIGHT(F{r}, 7)', '=LEFT(F{r}, 6)', '=TEXT(D{r},"MM-YY")', '=K{r}&":"&I{r}'],
+                    widths=[9.2, 18.1, 14.1, 14.1, 11.9, 43.8, 18.1, 12, 11.8, 9, 8.7, 14.8]),
+    "ตู้เย็น": dict(name="M3_ซ่อมตู้",
+                    headers=["ลำดับ", "เลขที่เอกสาร", "วันที่เปิดเอกสาร", "วันที่แจ้งซ่อม", "เวลา", "ทะเบียน / เบอร์ตู้",
+                             "รหัสพนักงาน", "สถานะซ่อม", "ทะเบียน", "Month", "Index"],
+                    formulas=['=IF(F{r}="","",TRIM(RIGHT(SUBSTITUTE(F{r},"/",REPT(" ",200)),200)))', '=TEXT(D{r},"MM-YY")',
+                              '=J{r}&"-"&I{r}'],
+                    widths=[8.7, 20.1, 14.7, 14.7, 9.4, 44.2, 11.8, 20.9, 12.7, 13.4, 17.9]),
+}
+
+
+def _num_or_text(v):
+    if v in (None, ""):
+        return None
+    try:
+        f = float(v)
+        return int(f) if f.is_integer() else f
+    except (TypeError, ValueError):
+        return v
+
+
+def export_m_sheets(db_path, out_path=None):
+    """สร้างไฟล์ Excel ชีต M1_ซ่อมรถ/M2_ซ่อมหาง/M3_ซ่อมตู้ จากฐานข้อมูล (1 แถว = 1 เลขเอกสาร, เรียงตามวันที่แจ้งซ่อม)
+    คอลัมน์ B–H = ข้อมูล ; I–M = สูตรเดียวกับไฟล์ต้นฉบับ (ISO อ้างชีต pm ของไฟล์หลัก) ; คืน bytes ถ้าไม่ระบุ out_path"""
+    import io
+    import openpyxl
+    from openpyxl.styles import Font, Alignment
+    con = connect(db_path)
+    try:
+        wb = openpyxl.Workbook()
+        wb.remove(wb.active)
+        base_font = Font(name="Angsana New", size=16)
+        hdr_font = Font(name="Angsana New", size=16, bold=True)
+        counts = {}
+        for at, spec in M_SHEETS.items():
+            ws = wb.create_sheet(spec["name"])
+            for j, h in enumerate(spec["headers"], 1):
+                c = ws.cell(2, j, h)
+                c.font = hdr_font
+                c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            rows = con.execute("SELECT * FROM repair_request WHERE asset_type=? ORDER BY report_date, doc_no", (at,)).fetchall()
+            r = 3
+            for row in rows:
+                vals = [None, row["doc_no"],
+                        dt.datetime.fromisoformat(row["open_date"]) if row["open_date"] else None,
+                        dt.datetime.fromisoformat(row["report_date"]),
+                        _num_or_text(row["report_time_raw"]) if row["report_time_raw"] is not None else 0,
+                        row["asset_raw"],
+                        _num_or_text(row["employee_code"]) if row["employee_code"] else ".",
+                        row["status"]]
+                for j, v in enumerate(vals, 1):
+                    c = ws.cell(r, j, v)
+                    c.font = base_font
+                    if j in (3, 4):
+                        c.number_format = "d/m/yyyy"
+                for k, f in enumerate(spec["formulas"]):
+                    c = ws.cell(r, 9 + k, f.format(r=r))
+                    c.font = base_font
+                r += 1
+            for j, w in enumerate(spec["widths"], 1):
+                ws.column_dimensions[openpyxl.utils.get_column_letter(j)].width = w
+            ws.freeze_panes = "C3"
+            ws.auto_filter.ref = f"A2:{openpyxl.utils.get_column_letter(len(spec['headers']))}{max(r - 1, 2)}"
+            counts[spec["name"]] = len(rows)
+        # ข้อมูลประกอบ
+        info = wb.create_sheet("ข้อมูลการ Export")
+        rv = con.execute("SELECT doc_no, kind, reason FROM repair_request_review WHERE decision IS NULL").fetchall()
+        lines = [("สร้างจากฐานข้อมูล", os.path.basename(db_path)), ("เวลา Export", dt.datetime.now().strftime("%d/%m/%Y %H:%M"))]
+        lines += [(f"จำนวนแถว {k}", v) for k, v in counts.items()]
+        lines += [("หมายเหตุ", "1 แถว = 1 เลขที่เอกสาร (ตัดแถวซ้ำแล้ว) เรียงตามวันที่แจ้งซ่อม ; คอลัมน์ I–M เป็นสูตรเดียวกับไฟล์หลัก"),
+                  ("หมายเหตุ ISO", "สูตร ISO อ้างชีต pm ในไฟล์หลัก — ในไฟล์นี้จะแสดง error จนกว่าจะวางลงไฟล์หลัก"),
+                  ("วิธีอัปเดต", "ในไฟล์หลัก ลบข้อมูลเดิมตั้งแต่แถว 3 ของแต่ละชีต แล้วคัดลอกแถว 3 ลงไปทั้งหมด (คอลัมน์ A–M) จากไฟล์นี้ไปวางที่แถว 3"),
+                  ("รายการรอตรวจที่ไม่ได้อยู่ในไฟล์นี้", len(rv))]
+        for k, v in lines:
+            info.append([k, v])
+        for x in rv:
+            info.append([x["doc_no"], f"{x['kind']}: {x['reason']}"])
+        info.column_dimensions["A"].width = 36
+        info.column_dimensions["B"].width = 110
+        if out_path:
+            wb.save(out_path)
+            return out_path, counts
+        buf = io.BytesIO()
+        wb.save(buf)
+        return buf.getvalue(), counts
+    finally:
+        con.close()
