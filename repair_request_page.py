@@ -117,6 +117,15 @@ def db_selector(is_local, app_dir, full):
         return db
 
 
+def _fmt_d(v):
+    if not v:
+        return "-"
+    s = str(v).strip()
+    if len(s) >= 10 and s[4:5] == "-" and s[7:8] == "-":
+        return f"{s[8:10]}/{s[5:7]}/{s[0:4]}" + (s[10:] if len(s) > 10 else "")
+    return s
+
+
 def _th(df):
     df = df.copy()
     for c in ("report_date", "open_date"):
@@ -206,7 +215,7 @@ def render(is_local, user, full, app_dir, kpi_card):
     db = db_selector(is_local, app_dir, full)
 
     st.markdown('<div class="app-hero"><h1>ฐานข้อมูลใบแจ้งซ่อม</h1>'
-                '<p>หัวลาก · หางพ่วง · ตู้เย็น — นำเข้าแบบกันซ้ำด้วยเลขที่เอกสาร · แถวที่ข้อมูลไม่สอดคล้องรอ DATA_OWNER ตัดสิน</p></div>',
+                '<p>หัวลาก · หางพ่วง · ตู้เย็น — นำเข้าแบบกันซ้ำด้วยเลขที่เอกสาร · แถวที่ข้อมูลไม่สอดคล้องรอคุณแขกตัดสินใจ</p></div>',
                 unsafe_allow_html=True)
 
     s = rr.summary(db)
@@ -216,11 +225,11 @@ def render(is_local, user, full, app_dir, kpi_card):
         kpi_card(k[0], "สถานะฐานข้อมูล", "ยังว่าง", "นำเข้าไฟล์ชุดแรกเพื่อสร้างฐานหลัก", "warn")
     else:
         bt = {r["asset_type"]: r for r in s["by_type"]}
-        kpi_card(k[0], "ใบแจ้งซ่อมทั้งหมด", f"{s['total']:,}", f"{min(r['d1'] for r in s['by_type'])} – {max(r['d2'] for r in s['by_type'])}")
+        kpi_card(k[0], "ใบแจ้งซ่อมทั้งหมด", f"{s['total']:,}", f"{_fmt_d(min(r['d1'] for r in s['by_type']))} – {_fmt_d(max(r['d2'] for r in s['by_type']))}")
         for i, t in enumerate(TYPES, 1):
             r = bt.get(t)
             kpi_card(k[i], t, f"{r['n']:,}" if r else "0", f"{r['assets']:,} คัน/ตู้" if r else "")
-        kpi_card(k[4], "รอตรวจ", f"{s['review_open']:,}", "รอ DATA_OWNER ตัดสิน", "warn" if s["review_open"] else "ok")
+        kpi_card(k[4], "รอตรวจ", f"{s['review_open']:,}", "รอคุณแขกตัดสินใจ", "warn" if s["review_open"] else "ok")
     st.write("")
 
     t_imp, t_data, t_kpi, t_rev, t_log = st.tabs(["📥 นำเข้าไฟล์", "📋 ข้อมูลในฐาน", "📊 KPI คัน/เดือน",
@@ -262,7 +271,7 @@ def render(is_local, user, full, app_dir, kpi_card):
                                        for u in plan["update"] for f, (o, n) in u["changes"].items()])
                 rev_df = pd.DataFrame([dict(เลขที่เอกสาร=r["rec"]["doc_no"], ประเภท=r["rec"]["asset_type"], ชนิด=r["kind"],
                                             เหตุผล=r["reason"], ทะเบียน=r["rec"]["asset_code"],
-                                            วันที่แจ้งซ่อม=r["rec"]["report_date"], แถวต้นทาง=r["rec"]["source_row"])
+                                            วันที่แจ้งซ่อม=_fmt_d(r["rec"]["report_date"]), แถวต้นทาง=r["rec"]["source_row"])
                                        for r in plan["review"]])
                 note_df = _th(_df([r for r in plan["new"] + [u["rec"] for u in plan["update"]] if r.get("data_note")],
                                   ["doc_no", "asset_type", "report_date", "report_time_raw", "report_time", "data_note", "source_row"]))
@@ -278,7 +287,7 @@ def render(is_local, user, full, app_dir, kpi_card):
                 with a2:
                     st.dataframe(upd_df, hide_index=True, **full)
                 with a3:
-                    st.caption("รายการเหล่านี้จะไม่เข้าตารางหลัก — ไปอยู่แท็บ 'รอตรวจ' ให้ DATA_OWNER กดนำเข้า/ไม่นำเข้า")
+                    st.caption("รายการเหล่านี้จะไม่เข้าตารางหลัก — ไปอยู่แท็บ 'รอตรวจ' ให้คุณแขกตัดสินใจกดนำเข้า/ไม่นำเข้า")
                     st.dataframe(rev_df, hide_index=True, **full)
                 with a4:
                     st.caption("นำเข้าได้ แต่ค่าเวลาเก็บตามต้นฉบับ (ไม่เดา) หรือแปลงจากรูปแบบวันที่ของ Excel")
@@ -425,13 +434,18 @@ def render(is_local, user, full, app_dir, kpi_card):
                     st.toast(msg); st.rerun()
         done = rr.fetch(db, "SELECT review_id, doc_no, kind, reason, decision, decided_by, decided_at FROM repair_request_review WHERE decision IS NOT NULL ORDER BY decided_at DESC")
         if done:
+            done_df = pd.DataFrame(done)
+            if "decided_at" in done_df.columns:
+                done_df["decided_at"] = done_df["decided_at"].map(_fmt_d)
             with st.expander(f"ตัดสินแล้ว ({len(done)})"):
-                st.dataframe(pd.DataFrame(done), hide_index=True, **full)
+                st.dataframe(done_df, hide_index=True, **full)
 
     # ------------------------------------------------------------------ log
     with t_log:
         b = pd.DataFrame(s["batches"])
         if len(b):
+            if "imported_at" in b.columns:
+                b["imported_at"] = b["imported_at"].map(_fmt_d)
             b = b.rename(columns={"batch_id": "batch", "file_name": "ไฟล์", "imported_by": "ผู้นำเข้า", "imported_at": "เวลา",
                                   "is_base_load": "ฐานหลักชุดแรก", "rows_read": "อ่าน", "rows_blank": "ว่าง", "rows_dup_in_file": "ซ้ำในไฟล์",
                                   "rows_inserted": "เพิ่ม", "rows_unchanged": "ไม่เปลี่ยน", "rows_updated": "อัปเดต", "rows_review": "รอตรวจ",
@@ -439,8 +453,13 @@ def render(is_local, user, full, app_dir, kpi_card):
             st.markdown("**ประวัติการนำเข้า**")
             st.dataframe(b, hide_index=True, **full)
         h = rr.fetch(db, "SELECT doc_no, field, old_value, new_value, changed_by, changed_at, batch_id FROM repair_request_history ORDER BY hist_id DESC LIMIT 2000")
+        hdf = pd.DataFrame(h)
+        if len(hdf):
+            for col_h in ("changed_at", "old_value", "new_value"):
+                if col_h in hdf.columns:
+                    hdf[col_h] = hdf[col_h].map(lambda v: _fmt_d(v) if v is not None else "")
         st.markdown("**ประวัติการเปลี่ยนแปลงข้อมูล**")
-        st.dataframe(pd.DataFrame(h), hide_index=True, **full)
+        st.dataframe(hdf, hide_index=True, **full)
         if is_local and os.path.exists(db):
             with open(db, "rb") as fh:
                 st.download_button("ดาวน์โหลดไฟล์ฐานข้อมูล (.sqlite)", fh.read(), file_name=os.path.basename(db), icon="🗄️")
@@ -452,13 +471,13 @@ def render_mileage(is_local, user, full, app_dir, kpi_card):
     ss = st.session_state
     db = db_selector(is_local, app_dir, full)
     st.markdown('<div class="app-hero"><h1>เลขไมล์</h1><p>นำเข้าเลขไมล์รายคัน (ทะเบียน · วันที่ · กม.) — '
-                'กันซ้ำด้วย ทะเบียน+วันที่ · ค่าผิดปกติรอ DATA_OWNER ตัดสิน</p></div>', unsafe_allow_html=True)
+                'กันซ้ำด้วย ทะเบียน+วันที่ · ค่าผิดปกติรอคุณแขกตัดสินใจ</p></div>', unsafe_allow_html=True)
     stat = rr.mileage_fetch(db, "SELECT COUNT(*) n, COUNT(DISTINCT asset_code) a, MAX(reading_date) d FROM mileage_reading")[0]
     nrev = rr.mileage_fetch(db, "SELECT COUNT(*) n FROM mileage_review WHERE decision IS NULL")[0]["n"]
     k = st.columns(4)
     kpi_card(k[0], "บันทึกเลขไมล์", f"{stat['n']:,}", "รายการ")
     kpi_card(k[1], "จำนวนคัน", f"{stat['a']:,}", "")
-    kpi_card(k[2], "วันที่ล่าสุด", stat["d"] or "-", "")
+    kpi_card(k[2], "วันที่ล่าสุด", _fmt_d(stat["d"]) if stat["d"] else "-", "")
     kpi_card(k[3], "รอตรวจ", f"{nrev:,}", "", "warn" if nrev else "ok")
     st.write("")
     t1, t2, t3, t4 = st.tabs(["📥 นำเข้าไฟล์", "📏 เลขไมล์ล่าสุด", f"⚠️ รอตรวจ ({nrev})", "🕘 ประวัติ"])
@@ -490,10 +509,10 @@ def render_mileage(is_local, user, full, app_dir, kpi_card):
                 st.write("")
                 a1, a2 = st.tabs([f"ใหม่ ({len(plan['new'])})", f"รอตรวจ ({len(plan['review'])})"])
                 with a1:
-                    st.dataframe(pd.DataFrame([dict(ทะเบียน=r["asset_code"], วันที่=r["reading_date"], กม=r["km"], หมายเหตุ=r["data_note"] or "",
+                    st.dataframe(pd.DataFrame([dict(ทะเบียน=r["asset_code"], วันที่=_fmt_d(r["reading_date"]), กม=r["km"], หมายเหตุ=r["data_note"] or "",
                                                     ชีต=r["source_sheet"], แถว=r["source_row"]) for r in plan["new"]]), hide_index=True, **full)
                 with a2:
-                    st.dataframe(pd.DataFrame([dict(ทะเบียน=x["rec"]["asset_code"], วันที่=x["rec"]["reading_date"], ค่าในไฟล์=x["rec"]["km_raw"],
+                    st.dataframe(pd.DataFrame([dict(ทะเบียน=x["rec"]["asset_code"], วันที่=_fmt_d(x["rec"]["reading_date"]), ค่าในไฟล์=x["rec"]["km_raw"],
                                                     เหตุผล=x["reason"]) for x in plan["review"]]), hide_index=True, **full)
                 ok = st.checkbox("ตรวจผลแล้ว ยืนยันนำเข้า", key="mi_ok")
                 n_act = len(plan["new"]) + len(plan["review"])
@@ -526,7 +545,7 @@ def render_mileage(is_local, user, full, app_dir, kpi_card):
             st.success("ไม่มีรายการรอตรวจ")
         for r in rows:
             with st.container(border=True):
-                st.markdown(f"**{r['asset_code']}** · วันที่ {r['reading_date']} · ค่าในไฟล์ `{r['km_raw']}`  \n{r['reason']}")
+                st.markdown(f"**{r['asset_code']}** · วันที่ {_fmt_d(r['reading_date'])} · ค่าในไฟล์ `{r['km_raw']}`  \n{r['reason']}")
                 c1, c2, c3 = st.columns([2, 1, 1])
                 kmv = c1.number_input("เลขไมล์ที่ถูกต้อง (ถ้าต้องการแก้)", min_value=0, step=1, value=None, key=f"mi_km_{r['review_id']}")
                 if c2.button("นำเข้า", key=f"mi_y_{r['review_id']}", type="primary", **full):
@@ -539,7 +558,13 @@ def render_mileage(is_local, user, full, app_dir, kpi_card):
                     rr.decide_mileage_review(db, r["review_id"], "ไม่นำเข้า", user or ("local" if is_local else "user"))
                     st.rerun()
     with t4:
-        st.dataframe(pd.DataFrame(rr.mileage_fetch(db, "SELECT batch_id, file_name ไฟล์, imported_by ผู้นำเข้า, imported_at เวลา, rows_read อ่าน, rows_dup_in_file ซ้ำในไฟล์, rows_inserted เพิ่ม, rows_unchanged ไม่เปลี่ยน, rows_review รอตรวจ, backup_path ไฟล์สำรอง FROM mileage_batch ORDER BY batch_id DESC")), hide_index=True, **full)
+        mb_df = pd.DataFrame(rr.mileage_fetch(db, "SELECT batch_id, file_name ไฟล์, imported_by ผู้นำเข้า, imported_at เวลา, rows_read อ่าน, rows_dup_in_file ซ้ำในไฟล์, rows_inserted เพิ่ม, rows_unchanged ไม่เปลี่ยน, rows_review รอตรวจ, backup_path ไฟล์สำรอง FROM mileage_batch ORDER BY batch_id DESC"))
+        if len(mb_df) and "เวลา" in mb_df.columns:
+            mb_df["เวลา"] = mb_df["เวลา"].map(_fmt_d)
+        st.dataframe(mb_df, hide_index=True, **full)
         q2 = st.text_input("ดูประวัติเลขไมล์ทะเบียน", key="mi_h")
         if q2:
-            st.dataframe(pd.DataFrame(rr.mileage_fetch(db, "SELECT reading_date วันที่, km กม, data_note หมายเหตุ, source_file ไฟล์, approved_by ผู้อนุมัติ FROM mileage_reading WHERE asset_code=? ORDER BY reading_date", q2.strip())), hide_index=True, **full)
+            mh_df = pd.DataFrame(rr.mileage_fetch(db, "SELECT reading_date วันที่, km กม, data_note หมายเหตุ, source_file ไฟล์, approved_by ผู้อนุมัติ FROM mileage_reading WHERE asset_code=? ORDER BY reading_date", q2.strip()))
+            if len(mh_df) and "วันที่" in mh_df.columns:
+                mh_df["วันที่"] = mh_df["วันที่"].map(_fmt_d)
+            st.dataframe(mh_df, hide_index=True, **full)

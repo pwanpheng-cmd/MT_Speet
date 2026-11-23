@@ -6,21 +6,25 @@ Streamlit web app สำหรับอ่านรายงาน Crystal Repor
 > **Repo นี้เป็น Public — เก็บเฉพาะโค้ด ห้าม commit ข้อมูลจริง** (ไฟล์รายงาน, Excel ที่ export, ฐานข้อมูล, รหัสผ่าน) — `.gitignore` กันไฟล์ .xls/.xlsx/.zip/.csv/.sqlite และ secrets ไว้แล้ว
 > ถ้า deploy บน Streamlit Community Cloud ให้ตั้งแอปเป็น **Private** (เชิญเฉพาะอีเมลที่อนุญาต) เพราะผู้ใช้จะอัปโหลดข้อมูลจริงเข้าแอป
 
-## หน้าในแอป
-1. **รายงานซ่อมรายคัน** — อ่าน Crystal Report รายคัน → กระทบยอด → Export Excel
-2. **ฐานข้อมูลใบแจ้งซ่อม** — นำเข้าใบแจ้งซ่อม หัวลาก/หางพ่วง/ตู้เย็น (ชีต M1/M2/M3 หรือ หัวลาก/หางพ่วง/ตู้เย็น) เข้า SQLite
-   กันซ้ำด้วยเลขที่เอกสาร, ตรวจก่อนบันทึก, backup อัตโนมัติ, แถวข้อมูลไม่สอดคล้อง → แท็บ "รอตรวจ" ให้ DATA_OWNER ตัดสิน,
-   KPI คัน/เดือน, Export M1/M2/M3 — เลือกไฟล์ฐานข้อมูลด้วย **① ไฟล์ฐานข้อมูล** (บนเครื่อง: Browse `.sqlite` แล้วบันทึกที่ไฟล์นั้นโดยตรง ; บน Cloud: Browse/อัปโหลด `.sqlite` → ทำงานบนสำเนาชั่วคราว → ดาวน์โหลดกลับไปวางทับไฟล์เดิม)
-   - 🛠️ PM Plan รายเดือน — ประวัติบริการจากไฟล์ Export รายงานซ่อมรายคัน (W/O น้ำมันเครื่อง/ไส้กรอง = ศูนย์บริการ ทุก 20,000 กม.; WX น้ำมันเครื่อง = ลาน ทุก 30,000 กม.; หรือ 6 เดือน อย่างใดถึงก่อน), กม./วันจากประวัติเลขไมล์ (`pm_plan.py`, `pm_plan_page.py`)
-   - 📏 เลขไมล์ (ใช้ไฟล์ฐานข้อมูลเดียวกัน) · 📖 คู่มือการใช้งาน (`static/manual.html`, เปิดแท็บใหม่ที่ `?manual=1`)
+## หน้าในแอป (7 หน้า)
+1. **📋 รายการอุปกรณ์** — จัดการทะเบียนอุปกรณ์หลัก (Master: หัวลาก / หางพ่วง / ตู้เย็น) เพิ่ม/แก้ไข/วางชุดใหม่/นำเข้า Excel และ Export (`monthly_report_page.py`, `monthly_report.py`)
+2. **🚛 รายงานซ่อมรายคัน** — อ่าน Crystal Report รายคัน → กระทบยอด → Export Excel (`vehicle_report_web.py`, `vehicle_report_app.py`)
+3. **🗂️ ฐานข้อมูลใบแจ้งซ่อม** — นำเข้าใบแจ้งซ่อม (ชีต M1/M2/M3 หรือ หัวลาก/หางพ่วง/ตู้เย็น) เข้า SQLite กันซ้ำด้วยเลขที่เอกสาร, ตรวจก่อนบันทึก, backup อัตโนมัติ, แท็บ "รอตรวจ" ให้ DATA_OWNER ตัดสิน, คอลัมน์ `ISO (Yes/No)`, KPI คัน/เดือน และ Export M1/M2/M3 (เฉพาะ `ISO = Yes`) (`repair_request_page.py`, `repair_request_db.py`)
+4. **🖨️ พิมพ์รายงานประจำเดือน** — แถบ **พิมพ์ KPI ประจำเดือน** (Export Excel 13 ชีตตาม Template: `Index`, `MTD-*`, `ทะเบียนทั้งหมด`, `สรุป_KPI_ประจำเดือน`, `1_หัวลาก..3_ซ่อมตู้`, `M1..M3`, `Last PM`), หน้าสรุป KPI/PDF และแบบฟอร์มรายงานซ่อมประจำเดือน (`monthly_report_page.py`, `monthly_report.py`)
+5. **📏 เลขไมล์** — นำเข้าและตรวจสอบประวัติเลขไมล์รายคัน (ใช้ฐานข้อมูล SQLite เดียวกัน)
+6. **🛠️ PM Plan รายเดือน** — ประวัติบริการจากไฟล์ Export รายงานซ่อมรายคัน (W/O ศูนย์บริการ 20,000 กม. / WX ลาน 30,000 กม. หรือ 6 เดือน อย่างใดถึงก่อน) และคำนวณกำหนด PM (`pm_plan.py`, `pm_plan_page.py`)
+7. **📖 คู่มือการใช้งาน** — แสดงคู่มือในหน้าแอป (`static/manual.html`) หรือเปิดแท็บใหม่ที่ `?manual=1`
 
 ## ไฟล์
 | ไฟล์ | หน้าที่ |
 |---|---|
-| `repair_request_db.py` | engine ฐานข้อมูลใบแจ้งซ่อม (schema v0.2.1, กันซ้ำ, review, backup) |
-| `repair_request_page.py` | หน้า "ฐานข้อมูลใบแจ้งซ่อม" |
-| `vehicle_report_web.py` | หน้าเว็บ (Main file สำหรับ Streamlit Cloud) |
-| `vehicle_report_app.py` | ตัวอ่านรายงาน, กระทบยอด, เลขไมล์, Export Excel (+ GUI Tkinter เมื่อรันบน Windows) |
+| `vehicle_report_web.py` | หน้าเว็บหลัก (Main file สำหรับ Streamlit Cloud — บนเครื่องอยู่ใต้ `Scrips/`) |
+| `vehicle_report_app.py` | ตัวอ่านรายงาน Crystal, กระทบยอด, เลขไมล์, Export Excel (+ GUI Tkinter บน Windows) |
+| `repair_request_db.py` | engine ฐานข้อมูลใบแจ้งซ่อม & เลขไมล์ (กันซ้ำ, review, backup, `in_iso`, Export M1/M2/M3) |
+| `repair_request_page.py` | UI หน้า "ฐานข้อมูลใบแจ้งซ่อม" และ "เลขไมล์" |
+| `monthly_report.py` | engine รายการอุปกรณ์ Master, รายงานประจำเดือน, KPI ISO 13 ชีต (`Index`, `MTD-*`, `Last PM`) — อ่านค่าเฉพาะองค์กรจาก `data/local_settings.json` |
+| `monthly_report_page.py` | UI หน้า "รายการอุปกรณ์" และ "พิมพ์รายงานประจำเดือน" |
+| `pm_plan.py` / `pm_plan_page.py` | engine และ UI หน้า "PM Plan รายเดือน" |
 | `requirements.txt` | ไลบรารีที่ใช้ |
 | `.streamlit/config.toml` | ปิดการส่งสถิติการใช้งาน, จำกัดขนาดอัปโหลด 200 MB |
 
@@ -52,12 +56,3 @@ Streamlit web app สำหรับอ่านรายงาน Crystal Repor
 py -m pip install -r requirements.txt
 py -m streamlit run vehicle_report_web.py --server.address localhost
 ```
-
-## v1.9.x — โครงสร้างบนเครื่อง และข้อมูลเฉพาะบริษัท
-- บนเครื่อง (`D:\MT_Speed`) ไฟล์ .py อยู่ในโฟลเดอร์ `Scrips\` — `Run_Vehicle_Report_Web.bat` เรียก `Scrips\vehicle_report_web.py` ; ใน repo ไฟล์อยู่ที่ root (Streamlit Cloud main file เดิม) — `APP_ROOT` หา `data/` และ `static/` ให้อัตโนมัติทั้งสองแบบ
-- หน้าเพิ่ม: 📋 รายการอุปกรณ์ (asset master) · 🖨️ พิมพ์รายงานประจำเดือน (`monthly_report.py`, `monthly_report_page.py`)
-- **ข้อมูลเฉพาะบริษัทไม่อยู่ในโค้ด**: แผน KPI รายเดือน, %Achieve ปีก่อน, หมายเหตุ Last PM รายคัน → `data/local_settings.json` บนเครื่อง (ไม่ขึ้น GitHub) ; ไม่มีไฟล์ = แผน 0 / ว่าง (เช่นบน Cloud)
-  ```json
-  {"kpi_plans": {"หัวลาก": [12 ค่า], "หางพ่วง": [...], "ตู้เย็น": [...]}, "ave_prev": {"หัวลาก": 85.0}, "last_pm_notes": {"ทะเบียน": "หมายเหตุ"}}
-  ```
-- Template KPI บริษัท: `data/kpi_template_iso.xlsx` (บนเครื่องเท่านั้น)

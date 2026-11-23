@@ -24,7 +24,7 @@ APP_ROOT = (
 sys.path.insert(0, SCRIPT_DIR)
 import vehicle_report_app as core  # noqa: E402
 
-WEB_VERSION = "1.9.5"
+WEB_VERSION = "2.0.7"
 import inspect as _inspect
 # ใช้ได้ทั้ง Streamlit รุ่นใหม่ (width="stretch") และรุ่นเก่า (**FULL)
 FULL = ({"width": "stretch"} if "width" in _inspect.signature(st.button).parameters
@@ -316,7 +316,16 @@ def style_rows(key, df):
 
 
 # ----------------------------------------------------------------------------- navigation
-PAGES = ["📋 รายการอุปกรณ์", "🚛 รายงานซ่อมรายคัน", "🗂️ ฐานข้อมูลใบแจ้งซ่อม", "🖨️ พิมพ์รายงานประจำเดือน", "📏 เลขไมล์", "🛠️ PM Plan รายเดือน", "📖 คู่มือการใช้งาน"]
+PAGES = [
+    "1.1 รายการอุปกรณ์",
+    "1.2 นำเข้าเลขไมล์",
+    "2.1 รายงานซ่อมรายคัน",
+    "2.2 PM Plan รายเดือน",
+    "3.1 ฐานข้อมูลใบแจ้งซ่อม",
+    "3.2 พิมพ์ KPI ประจำเดือน",
+    "9.1 คู่มือ",
+    "9.2 จัดการผู้ใช้ (รอดำเนินการ)",
+]
 with st.sidebar:
     st.markdown("### 🚛 Speed Fleet Maintenance")
     st.caption(f"Web v{WEB_VERSION} · report engine v{core.APP_VERSION}")
@@ -334,6 +343,26 @@ with st.sidebar:
 if PAGE == PAGES[0]:
     import monthly_report_page
     monthly_report_page.render_asset_master(IS_LOCAL, CURRENT_USER, FULL, APP_ROOT, kpi)
+    st.stop()
+
+if PAGE == PAGES[1]:
+    import repair_request_page
+    repair_request_page.render_mileage(IS_LOCAL, CURRENT_USER, FULL, APP_ROOT, kpi)
+    st.stop()
+
+if PAGE == PAGES[3]:
+    import pm_plan_page
+    pm_plan_page.render_pm(IS_LOCAL, CURRENT_USER, FULL, APP_ROOT, kpi)
+    st.stop()
+
+if PAGE == PAGES[4]:
+    import repair_request_page
+    repair_request_page.render(IS_LOCAL, CURRENT_USER, FULL, APP_ROOT, kpi)
+    st.stop()
+
+if PAGE == PAGES[5]:
+    import monthly_report_page
+    monthly_report_page.render_monthly(IS_LOCAL, CURRENT_USER, FULL, APP_ROOT, kpi)
     st.stop()
 
 if PAGE == PAGES[6]:
@@ -355,20 +384,27 @@ if PAGE == PAGES[6]:
         st.error(f"ไม่พบไฟล์คู่มือ: {MANUAL_PATH}")
     st.stop()
 
-if PAGE == PAGES[5]:
-    import pm_plan_page
-    pm_plan_page.render_pm(IS_LOCAL, CURRENT_USER, FULL, APP_ROOT, kpi)
-    st.stop()
-
-if PAGE == PAGES[3]:
-    import monthly_report_page
-    monthly_report_page.render_monthly(IS_LOCAL, CURRENT_USER, FULL, APP_ROOT, kpi)
-    st.stop()
-
-if PAGE in (PAGES[2], PAGES[4]):
-    import repair_request_page
-    (repair_request_page.render if PAGE == PAGES[2] else repair_request_page.render_mileage)(
-        IS_LOCAL, CURRENT_USER, FULL, APP_ROOT, kpi)
+if PAGE == PAGES[7]:
+    st.markdown('<div class="app-hero"><h1>👤 จัดการผู้ใช้ (รอดำเนินการ)</h1>'
+                '<p>เมนูจัดการบัญชีผู้ใช้และสิทธิ์การเข้าถึง — อยู่ระหว่างรอดำเนินการพัฒนาเพิ่มเติม (รอคุณแขกตัดสินใจรูปแบบสิทธิ์ผู้ใช้)</p></div>',
+                unsafe_allow_html=True)
+    st.info("🚧 **สถานะ: รอดำเนินการ (รอคุณแขกตัดสินใจ)** — ปัจจุบันการเพิ่ม/รีเซ็ตรหัสผ่านผู้ใช้บน Streamlit Cloud ใช้การตั้งค่าผ่าน `[users]` ใน Streamlit Secrets (PBKDF2-SHA256)")
+    with st.expander("🔐 เครื่องมือสร้างรหัสผ่านเข้ารหัส (PBKDF2-SHA256) สำหรับวางใน Secrets", expanded=True):
+        with st.form("mk_user_admin", clear_on_submit=True):
+            u_a = st.text_input("ชื่อผู้ใช้ (ภาษาอังกฤษ/ตัวเลข)")
+            p1_a = st.text_input("รหัสผ่าน (อย่างน้อย 8 ตัว)", type="password")
+            p2_a = st.text_input("ยืนยันรหัสผ่าน", type="password")
+            ok_a = st.form_submit_button("สร้างบรรทัดสำหรับ Secrets", type="primary")
+        if ok_a:
+            import re as _re
+            if not _re.fullmatch(r"[A-Za-z0-9_.-]{2,30}", u_a or ""):
+                st.error("ชื่อผู้ใช้ใช้ได้เฉพาะ A-Z a-z 0-9 _ . - ยาว 2–30 ตัว")
+            elif len(p1_a or "") < 8:
+                st.error("รหัสผ่านต้องยาวอย่างน้อย 8 ตัว")
+            elif p1_a != p2_a:
+                st.error("รหัสผ่านทั้งสองช่องไม่ตรงกัน")
+            else:
+                st.code(f'[users]\n{u_a.lower()} = "{hash_password(p1_a)}"', language="toml")
     st.stop()
 
 # ----------------------------------------------------------------------------- state
@@ -428,13 +464,17 @@ with st.sidebar:
                            icon="⬇️", type="primary", **FULL)
     st.divider()
     st.caption("อ่านไฟล์ต้นทางแบบอ่านอย่างเดียว · ไม่แตะฐานข้อมูล Fleet_DB · "
-               "แถว Flag No ต้องให้ DATA_OWNER ตรวจก่อนนำเข้าฐานข้อมูลหลัก")
+               "แถว Flag No ต้องให้คุณแขก (เจ้าของระบบ/DATA_OWNER) ตรวจก่อนนำเข้าฐานข้อมูลหลัก")
     if not IS_LOCAL:
         st.caption("โหมด Cloud: ไฟล์ที่อัปโหลดถูกอ่านแล้วลบทันที ไม่เก็บบนเซิร์ฟเวอร์ · ข้อมูลอยู่ในหน่วยความจำเฉพาะ session นี้")
         if st.button("ล้างข้อมูลใน session", icon="🧹", **FULL):
             for k_ in ("ds", "export_blob", "last_export"):
                 ss[k_] = None
             st.rerun()
+
+import repair_request_page as _rrp_vr
+import vehicle_report_db as vrdb
+VR_DB_PATH = _rrp_vr.db_selector(IS_LOCAL, APP_ROOT, FULL)
 
 # ----------------------------------------------------------------------------- actions
 if load:
@@ -479,10 +519,14 @@ st.markdown('<div class="app-hero"><h1>รายงานซ่อม &amp; เ�
 ds = ss.ds
 if ds is None:
     _hint = "เลือกโฟลเดอร์รายงานทางซ้าย" if IS_LOCAL else "อัปโหลดไฟล์รายงาน (.xls/.xlsx หรือ .zip) ทางซ้าย"
-    st.markdown('<div class="empty"><div style="font-size:2.4rem">📂</div>'
-                '<h3 style="margin:.3rem 0">ยังไม่มีข้อมูล</h3>'
-                f'{_hint} แล้วกด <b>อ่านข้อมูล</b><br>'
-                'จากนั้นตรวจแท็บ <b>ประเด็น/Flag</b> และกด <b>Export Excel</b></div>', unsafe_allow_html=True)
+    t_empty, t_db_only = st.tabs(["📂 อ่านไฟล์รายงานใหม่", "🗄️ ข้อมูลในฐาน (รายงานรายคัน)"])
+    with t_empty:
+        st.markdown('<div class="empty"><div style="font-size:2.4rem">📂</div>'
+                    '<h3 style="margin:.3rem 0">ยังไม่มีข้อมูลในรอบนี้</h3>'
+                    f'{_hint} แล้วกด <b>อ่านข้อมูล</b><br>'
+                    'จากนั้นตรวจแท็บ <b>ประเด็น/Flag</b> · กด <b>💾 บันทึกลงฐานข้อมูล</b> หรือ <b>Export Excel</b></div>', unsafe_allow_html=True)
+    with t_db_only:
+        vrdb.render_vr_db_tab(VR_DB_PATH, IS_LOCAL, APP_ROOT, FULL, kpi, money)
     st.stop()
 
 s = ds["summary"]
@@ -507,11 +551,14 @@ kpi(k[5], "ยอดรวม (บาท)", money(s["all"]), f"Flag No {s['n_fla
     "warn" if s["n_flag_no"] else "ok")
 st.write("")
 
+# ----------------------------------------------------------------------------- save to SQLite box
+vrdb.render_vr_save_box(VR_DB_PATH, ds, CURRENT_USER or ("local" if IS_LOCAL else "user"), FULL)
+
 # ----------------------------------------------------------------------------- tabs
-TAB_ORDER = [("dash", "📊 ภาพรวม")] + [(k_, t) for k_, t in core.SHEETS]
+TAB_ORDER = [("dash", "📊 ภาพรวม")] + [(k_, t) for k_, t in core.SHEETS] + [("vr_db", "🗄️ ข้อมูลในฐาน (รายงานรายคัน)")]
 labels = []
 for key, title in TAB_ORDER:
-    if key == "dash":
+    if key in ("dash", "vr_db"):
         labels.append(title)
     else:
         n = len(ds[key])
@@ -578,6 +625,9 @@ with tabs[0]:
 
 for i, (key, title) in enumerate(TAB_ORDER[1:], start=1):
     with tabs[i]:
+        if key == "vr_db":
+            vrdb.render_vr_db_tab(VR_DB_PATH, IS_LOCAL, APP_ROOT, FULL, kpi, money)
+            continue
         df = to_df(key, ds[key])
         f1, f2, f3 = st.columns([2.2, 2.2, 1.2])
         q = f1.text_input("ค้นหา", key=f"q_{key}", placeholder="ทะเบียน / เลขเอกสาร / ชื่อรายการ / ผู้ขาย…",

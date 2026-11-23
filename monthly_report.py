@@ -2,7 +2,7 @@
 """
 Monthly KPI & Maintenance Print Report Engine — Speed Fleet Maintenance (v1.8.0)
 - จัดการทะเบียนรถหลัก (asset_master: หัวลาก / หางพ่วง / ตู้เย็น) ใน SQLite
-- คำนวณสรุป KPI ประจำเดือน และรายปี (แยกใน Master vs นอก Master รอ DATA_OWNER ตรวจสอบ)
+- คำนวณสรุป KPI ประจำเดือน และรายปี (แยกใน Master vs นอก Master รอคุณแขกตัดสินใจ)
 - สร้างไฟล์ Excel (.xlsx) พร้อมพิมพ์ตาม Template บริษัท (1_หัวลาก / 2_หางพ่วง / 3_ซ่อมตู้ + สรุป KPI)
 - สร้างหน้า HTML Print View พร้อมสั่งพิมพ์ / Save as PDF จากเบราว์เซอร์ (หัวกระดาษซ้ำทุกหน้า)
 """
@@ -367,7 +367,7 @@ def export_asset_master_excel(db_path):
 def compute_monthly_report(db_path, report_month):
     """คำนวณข้อมูลรายงานซ่อมประจำเดือน + KPI สำหรับเดือนที่เลือก
     - แบบ ข (ตามอนุมัติ): แบบฟอร์มแสดงเฉพาะทะเบียนที่อยู่ใน asset_master (active)
-    - ทะเบียนที่มีใบซ่อมในเดือนนั้นแต่ไม่อยู่ใน asset_master แยกไว้ใน unmatched ให้ DATA_OWNER ตัดสินใจ
+    - ทะเบียนที่มีใบซ่อมในเดือนนั้นแต่ไม่อยู่ใน asset_master แยกไว้ใน unmatched ให้คุณแขกตัดสินใจ
     - รถ 1 คันมีหลายใบแจ้งซ่อมในเดือนเดียวกัน แสดงทุกใบคั่นด้วย ', ' (เรียงตามวันที่แจ้งซ่อม, เลขที่เอกสาร)"""
     d1, d2 = month_bounds(report_month)
     con = connect_master(db_path)
@@ -1115,7 +1115,7 @@ def _add_kpi_sheet(wb, rep, yearly_rows, logo_path=None, index=0):
     ws["A6"].alignment = Alignment(horizontal="center", vertical="center")
 
     # Section 1: Selected Month KPI
-    ws["A8"] = "1. สรุป KPI ประจำเดือนที่เลือก (อิงทะเบียนรถหลัก Master และแยกทะเบียนนอก Master ให้ DATA_OWNER ตรวจสอบ)"
+    ws["A8"] = "1. สรุป KPI ประจำเดือนที่เลือก (อิงทะเบียนรถหลัก Master และแยกทะเบียนนอก Master ให้คุณแขกตัดสินใจ)"
     ws["A8"].font = f_sec
     hdr1 = ["ประเภท", "Total (ใน Master)", "เข้าซ่อม (ใน Master)", "% การเข้าซ่อม", "ใบแจ้งซ่อม (ใน Master)",
             "นอก Master (คัน/ตู้)", "รวมในฐาน DB (คัน/ตู้)", "รวมใบแจ้งซ่อม (ใบ)"]
@@ -1221,7 +1221,7 @@ def _add_unmatched_sheet(wb, rep):
     f_cell = Font(name="Arial", size=10)
     fill_hdr = PatternFill("solid", fgColor="FCE4D6")
     b_thin = _thin_border()
-    ws["A1"] = f"รายการที่มีใบแจ้งซ่อมเดือน {rep['month_th']} แต่ไม่อยู่ในทะเบียนรถหลัก (Master) — รอ DATA_OWNER ตรวจสอบ"
+    ws["A1"] = f"รายการที่มีใบแจ้งซ่อมเดือน {rep['month_th']} แต่ไม่อยู่ในทะเบียนรถหลัก (Master) — รอคุณแขกตัดสินใจ"
     ws["A1"].font = Font(name="Arial", size=12, bold=True, color="9C0006")
     headers = ["ประเภท", "ทะเบียน/เบอร์ตู้", "ทะเบียนต้นฉบับ", "จำนวนใบซ่อม", "เลขที่ใบแจ้งซ่อม", "วันที่แรก", "วันที่ล่าสุด", "ยี่ห้อ", "สถานะ", "หมายเหตุ"]
     widths = [12, 18, 32, 13, 38, 13, 13, 14, 16, 26]
@@ -1342,9 +1342,9 @@ def _add_last_pm_sheet(wb, db_path, report_month, pm_interval_days=180):
         row_cells = [
             (1, idx, None, "center"),
             (2, code, None, "center"),
-            (3, d_val, "yyyy-mm-dd", "center"),
-            (4, f'=IF(C{r}="","",C{r})' if d_val else None, "yyyy-mm-dd", "center"),
-            (5, f'=IF(D{r}="","",D{r}+{pm_interval_days})' if d_val else None, "yyyy-mm-dd", "center"),
+            (3, d_val, "dd/mm/yyyy", "center"),
+            (4, f'=IF(C{r}="","",C{r})' if d_val else None, "dd/mm/yyyy", "center"),
+            (5, f'=IF(D{r}="","",D{r}+{pm_interval_days})' if d_val else None, "dd/mm/yyyy", "center"),
             (6, f'=IF(E{r}="","",IF(E{r}<TODAY(),"overdue","on plan"))' if d_val else None, None, "center"),
             (7, f'=IF(E{r}="","",TEXT(E{r},"mmm-yy"))' if d_val else None, None, "center"),
             (8, note_txt, None, "left"),

@@ -138,7 +138,7 @@ def render_monthly(is_local, user, full, app_dir, kpi_card):
     st.markdown(
         '<div class="app-hero"><h1>🖨️ พิมพ์รายงาน KPI และรายงานซ่อมประจำเดือน</h1>'
         '<p>สรุป KPI ประจำเดือน · แบบฟอร์มตาม Template บริษัท (1_หัวลาก · 2_หางพ่วง · 3_ซ่อมตู้) · '
-        'รองรับทั้ง Excel พร้อมพิมพ์ (.xlsx) และหน้าพิมพ์ / Save PDF (.html) · แยกรถนอก Master ให้ DATA_OWNER ตรวจสอบ</p></div>',
+        'รองรับทั้ง Excel พร้อมพิมพ์ (.xlsx) และหน้าพิมพ์ / Save PDF (.html) · แยกรถนอก Master ให้คุณแขกตัดสินใจ</p></div>',
         unsafe_allow_html=True,
     )
 
@@ -491,13 +491,13 @@ def render_monthly(is_local, user, full, app_dir, kpi_card):
                     key="mr_save_form_xl",
                 )
 
-        # ---- Unmatched review section for DATA_OWNER (คุณแขก)
+        # ---- Unmatched review section for SYSTEM_OWNER / DATA_OWNER (คุณแขก)
         unm_list = []
         for at in sel_types:
             unm_list.extend(rep["by_type"][at]["unmatched"])
         if unm_list:
             with st.expander(
-                f"⚠️ รายการนอก Master ในเดือน {sel_month} ({len(unm_list)} คัน/ตู้) — แยกไว้ให้ DATA_OWNER (คุณแขก) ตัดสินใจ",
+                f"⚠️ รายการนอก Master ในเดือน {sel_month} ({len(unm_list)} คัน/ตู้) — แยกไว้ให้คุณแขกตัดสินใจ",
                 expanded=True,
             ):
                 st.caption(
@@ -584,6 +584,8 @@ def render_asset_master(is_local, user, full, app_dir, kpi_card):
         if len(mdf):
             if fq_m:
                 mdf = mdf[mdf["asset_code"].str.contains(fq_m.strip(), case=False, regex=False)]
+            if "updated_at" in mdf.columns:
+                mdf["updated_at"] = pd.to_datetime(mdf["updated_at"], errors="coerce").dt.strftime("%d/%m/%Y %H:%M").fillna(mdf["updated_at"])
             mdf["สถานะ"] = mdf["is_active"].map(lambda v: "ใช้งาน" if v else "ปิดใช้งาน")
             mdf = mdf.rename(columns={
                 "asset_type": "ประเภท", "asset_code": "ทะเบียน/เบอร์ตู้", "sort_order": "ลำดับ",

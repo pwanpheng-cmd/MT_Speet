@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS service_batch (
     backup_path TEXT
 );
 CREATE TABLE IF NOT EXISTS service_doc (
-    doc_no TEXT PRIMARY KEY,               -- เลขที่ใบสั่งซ่อม (W/O) หรือ เลขที่ใบเบิก (WX)
+    doc_no TEXT NOT NULL,                  -- เลขที่ใบสั่งซ่อม (W/O) หรือ เลขที่ใบเบิก (WX)
     doc_kind TEXT NOT NULL CHECK (doc_kind IN ('W/O','WX')),
     asset_code TEXT NOT NULL,              -- ทะเบียน
     doc_date TEXT,                         -- YYYY-MM-DD
@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS service_doc (
     row_hash TEXT,
     source_file TEXT,
     batch_id INTEGER,
-    updated_at TEXT DEFAULT (datetime('now','localtime'))
+    updated_at TEXT DEFAULT (datetime('now','localtime')),
+    PRIMARY KEY (doc_kind, asset_code, doc_no)
 );
 CREATE INDEX IF NOT EXISTS ix_service_doc_asset ON service_doc(asset_code, doc_date);
 """
@@ -47,23 +48,163 @@ ODO_WRAP = 1_000_000          # เลขไมล์บางแหล่งเ
 DEFAULTS = dict(center_km=20000, yard_km=30000, months=6, window_days=365, max_km_day=1000, min_km_day=20)
 
 _OIL_EXCL = ("ปะเก็น", "ประเก็น", "ท่อ", "ฝา", "ถัง", "อ่าง", "ซีล")
+_CENTER_PM_CODES = {
+    "WO-001-001-1513",  # น้ำมันเครื่อง
+    "WO-001-001-4411",  # ไส้กรองน้ำมันเครื่อง
+    "WO-001-001-0035",  # กรองน้ำมันเครื่อง
+    "WO-001-001-6016",  # ไส้กรองน้ำมันเครื่อง
+    "WO-001-001-4442",  # ไส้กรองน้ำมันเครื่อง+โซล่า
+    "WO-001-001-4406",  # ไส้กรองน้ำมันเเครื่องJO8E-09
+    "WO-001-001-1784",  # ENGINE OIL LDF3 10W-40 209 L (Scania)
+    "WO-001-001-5076",  # ENGINE OIL LDF3 10W-40 209L (Scania)
+}
+_ENGINE_REPLACE_CODES = {
+    "WO-001-001-0198",  # HINO DIESEL ENGINE (500 SERIE)
+    "WO-001-001-0202",  # KIT CHANGE COMPANANT NGV-DIESEL
+}
 
 
-def is_center_item(name):
-    """W/O: น้ำมันเครื่อง หรือ ไส้กรอง/กรองน้ำมันเครื่อง (ไม่นับ ปะเก็น/ท่อ/ฝา/ถัง)"""
+def is_engine_replace_item(name, code=None):
+    """W/O: งานเปลี่ยนเครื่องยนต์ใหม่ (HINO DIESEL ENGINE / KIT CHANGE COMPANANT NGV-DIESEL) — ใช้เป็นจุดเริ่มต้นวางแผน PM รอบศูนย์ 20,000 กม./6 เดือน"""
+    if code and str(code).strip().upper() in _ENGINE_REPLACE_CODES:
+        return True
+    n = str(name or "").upper()
+    return ("DIESEL ENGINE" in n) or ("KIT CHANGE COMPANANT" in n) or ("เปลี่ยนเครื่องยนต์" in n)
+
+
+def is_center_item(name, code=None):
+    """W/O: รหัสมาตรฐานน้ำมันเครื่อง/ไส้กรองศูนย์ หรือชื่อรายการมี น้ำมันเครื่อง / ENGINE OIL (ไม่นับ ปะเก็น/ท่อ/ฝา/ถัง/อ่าง/ซีล)"""
+    if code and str(code).strip().upper() in _CENTER_PM_CODES:
+        return True
     n = str(name or "")
-    return "น้ำมันเครื่อง" in n and not any(x in n for x in _OIL_EXCL)
+    if "ENGINE OIL" in n.upper():
+        return True
+    return ("น้ำมันเครื่อง" in n or "น้ำมันเเครื่อง" in n) and not any(x in n for x in _OIL_EXCL)
 
 
-def is_yard_oil(name):
+def is_yard_oil(name, code=None):
     """WX: ตัวน้ำมันเครื่อง (ไม่นับไส้กรองและอะไหล่ประกอบ)"""
     n = str(name or "")
-    return "น้ำมันเครื่อง" in n and "กรอง" not in n and not any(x in n for x in _OIL_EXCL)
+    return ("น้ำมันเครื่อง" in n or "น้ำมันเเครื่อง" in n) and "กรอง" not in n and not any(x in n for x in _OIL_EXCL)
+
+
+def _ensure_composite_service_doc(con):
+    """อัปเกรดตาราง service_doc เดิม (ที่เคยใช้ doc_no เดี่ยวเป็น PK จน W/O กับ WX เลขซ้ำกันทับกัน) ให้ใช้ PRIMARY KEY (doc_kind, asset_code, doc_no)"""
+    info = con.execute("PRAGMA table_info(service_doc)").fetchall()
+    pk_cols = [r[1] for r in info if r[5] > 0]
+    if len(pk_cols) == 1 and pk_cols[0] == "doc_no":
+        with con:
+            con.execute("DROP TABLE IF EXISTS service_doc")
+            con.executescript(PM_SQL)
+
+
+def sync_from_vr_tables(con):
+    """ดึงข้อมูลโดยตรงจากตาราง vr_wo_header / vr_wo_line / vr_issue_line (รายงานซ่อม & เบิกพัสดุรายคัน) มาสร้าง service_doc อัตโนมัติ"""
+    has_vr = con.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('vr_wo_header','vr_wo_line','vr_issue_line')"
+    ).fetchone()[0] == 3
+    if not has_vr:
+        return 0
+    n_vr = (
+        con.execute("SELECT COUNT(*) FROM vr_wo_header").fetchone()[0]
+        + con.execute("SELECT COUNT(*) FROM vr_issue_line").fetchone()[0]
+    )
+    if n_vr == 0:
+        return 0
+
+    wo_items = {}
+    wo_eng_items = {}
+    for p, d, code, name in con.execute("SELECT plate, doc_no, item_code, item_name FROM vr_wo_line"):
+        if is_engine_replace_item(name, code):
+            lbl = str(name or code or "").strip()
+            if lbl:
+                wo_eng_items.setdefault((p, d), set()).add(lbl)
+        elif is_center_item(name, code):
+            lbl = str(name or code or "").strip()
+            if lbl:
+                wo_items.setdefault((p, d), set()).add(lbl)
+
+    docs = []
+    for p, d, dd, km, kst, vth, ven, net, sfile in con.execute(
+        "SELECT plate, doc_no, doc_date, mileage_km, mileage_status, vendor_th, vendor_en, COALESCE(net,0), source_file FROM vr_wo_header"
+    ):
+        eng_its = sorted(wo_eng_items.get((p, d), set()))
+        its = sorted(wo_items.get((p, d), set()))
+        if eng_its:
+            pm_t = "เปลี่ยนเครื่องยนต์"
+            pm_it = " · ".join(eng_its)
+        elif its:
+            pm_t = "ศูนย์บริการ"
+            pm_it = " · ".join(its)
+        else:
+            pm_t = None
+            pm_it = None
+        rec = dict(
+            doc_no=d, doc_kind="W/O", asset_code=p, doc_date=dd,
+            km=km, km_status=kst, vendor=vth or ven,
+            pm_type=pm_t,
+            pm_items=pm_it,
+            amount=round(float(net or 0), 2),
+        )
+        rec["row_hash"] = rr.file_sha256(json.dumps(rec, ensure_ascii=False, default=str).encode())[:20]
+        docs.append((rec, sfile or "vr_wo_header"))
+
+    wx_groups = {}
+    for p, d, dd, km, kst, store, code, name, tot, sfile in con.execute(
+        "SELECT plate, doc_no, doc_date, mileage_km, mileage_status, store, inv_code, inv_name, COALESCE(total,0), source_file FROM vr_issue_line"
+    ):
+        g = wx_groups.get((p, d))
+        if g is None:
+            g = wx_groups[(p, d)] = dict(
+                doc_no=d, doc_kind="WX", asset_code=p, doc_date=dd,
+                km=None, km_status=None, vendor=store,
+                pm_type=None, pm_items_set=set(), amount=0.0, sfile=sfile or "vr_issue_line",
+            )
+        if dd and (not g["doc_date"] or dd < g["doc_date"]):
+            g["doc_date"] = dd
+        if km is not None and (g["km"] is None or (g["km_status"] != "ชัดเจน" and kst == "ชัดเจน")):
+            g["km"], g["km_status"] = km, kst
+        g["amount"] += float(tot or 0)
+        if is_yard_oil(name, code):
+            g["pm_type"] = "ลาน"
+            if name:
+                g["pm_items_set"].add(str(name).strip())
+
+    for g in wx_groups.values():
+        its = sorted(g.pop("pm_items_set"))
+        sfile = g.pop("sfile")
+        g["pm_items"] = " · ".join(its) or None
+        g["amount"] = round(g["amount"], 2)
+        g["row_hash"] = rr.file_sha256(json.dumps(g, ensure_ascii=False, default=str).encode())[:20]
+        docs.append((g, sfile))
+
+    cur = {
+        (r[0], r[1], r[2]): r[3]
+        for r in con.execute("SELECT doc_kind, asset_code, doc_no, row_hash FROM service_doc")
+    }
+    to_write = [
+        (rec, sf) for rec, sf in docs
+        if cur.get((rec["doc_kind"], rec["asset_code"], rec["doc_no"])) != rec["row_hash"]
+    ]
+    if to_write or len(cur) != len(docs):
+        with con:
+            if len(cur) != len(docs):
+                con.execute("DELETE FROM service_doc")
+                to_write = docs
+            for rec, sf in to_write:
+                con.execute(
+                    f"INSERT OR REPLACE INTO service_doc({','.join(COLS)},source_file,batch_id,updated_at) "
+                    f"VALUES ({','.join('?' * len(COLS))},?,0,datetime('now','localtime'))",
+                    [rec[c] for c in COLS] + [sf],
+                )
+    return len(docs)
 
 
 def connect(db_path):
     con = rr.connect_mileage(db_path)       # สร้างตารางหลัก + เลขไมล์ ถ้ายังไม่มี
     con.executescript(PM_SQL)
+    _ensure_composite_service_doc(con)
+    sync_from_vr_tables(con)
     return con
 
 
@@ -112,15 +253,17 @@ def read_report_export(src):
     docs, errors = {}, []
     wo_items = {}
     for r in rows("ใบสั่งซ่อม_บรรทัด"):
-        if is_center_item(r.get("ชื่อรายการ")):
-            wo_items.setdefault(str(r.get("เลขที่ใบสั่งซ่อม")).strip(), []).append(str(r.get("ชื่อรายการ")).strip())
+        if is_center_item(r.get("ชื่อรายการ"), r.get("รหัสรายการ")):
+            p_k = str(r.get("ทะเบียน") or "").strip()
+            no_k = str(r.get("เลขที่ใบสั่งซ่อม") or "").strip()
+            wo_items.setdefault((p_k, no_k), []).append(str(r.get("ชื่อรายการ") or r.get("รหัสรายการ")).strip())
     for r in rows("ใบสั่งซ่อม_หัว"):
         no = str(r.get("เลขที่ใบสั่งซ่อม") or "").strip()
         plate = str(r.get("ทะเบียน") or "").strip()
         if not no or not plate:
             continue
-        items = wo_items.get(no, [])
-        docs[no] = dict(doc_no=no, doc_kind="W/O", asset_code=plate, doc_date=_date(r.get("วันที่")),
+        items = wo_items.get((plate, no), [])
+        docs[("W/O", plate, no)] = dict(doc_no=no, doc_kind="W/O", asset_code=plate, doc_date=_date(r.get("วันที่")),
                         km=_int(r.get("เลขไมล์")), km_status=(r.get("สถานะเลขไมล์") or None),
                         vendor=(r.get("ผู้ขาย (TH)") or r.get("ผู้ขาย (EN)") or None),
                         pm_type="ศูนย์บริการ" if items else None, pm_items=" · ".join(sorted(set(items))) or None,
@@ -130,15 +273,16 @@ def read_report_export(src):
         plate = str(r.get("ทะเบียน") or "").strip()
         if not no or not plate:
             continue
-        d = docs.get(no)
+        key_wx = ("WX", plate, no)
+        d = docs.get(key_wx)
         if d is None:
-            d = docs[no] = dict(doc_no=no, doc_kind="WX", asset_code=plate, doc_date=_date(r.get("วันที่")), km=None,
+            d = docs[key_wx] = dict(doc_no=no, doc_kind="WX", asset_code=plate, doc_date=_date(r.get("วันที่")), km=None,
                                 km_status=None, vendor=(r.get("คลัง") or None), pm_type=None, pm_items=None, amount=0.0)
         km, stt = _int(r.get("เลขไมล์")), r.get("สถานะเลขไมล์")
         if km is not None and (d["km"] is None or (d["km_status"] != "ชัดเจน" and stt == "ชัดเจน")):
             d["km"], d["km_status"] = km, stt
         d["amount"] = (d["amount"] or 0) + (r.get("ยอดสุทธิ") or 0)
-        if is_yard_oil(r.get("ชื่อพัสดุ")):
+        if is_yard_oil(r.get("ชื่อพัสดุ"), r.get("รหัสพัสดุ")):
             d["pm_type"] = "ลาน"
             its = set(filter(None, (d["pm_items"] or "").split(" · "))) | {str(r.get("ชื่อพัสดุ")).strip()}
             d["pm_items"] = " · ".join(sorted(its))
@@ -156,12 +300,14 @@ def read_report_export(src):
 def analyze_service(db_path, docs):
     con = connect(db_path)
     try:
-        cur = {r["doc_no"]: r["row_hash"] for r in con.execute("SELECT doc_no, row_hash FROM service_doc")}
+        cur = {(r["doc_kind"], r["asset_code"], r["doc_no"]): r["row_hash"]
+               for r in con.execute("SELECT doc_kind, asset_code, doc_no, row_hash FROM service_doc")}
     finally:
         con.close()
-    new = [d for d in docs if d["doc_no"] not in cur]
-    upd = [d for d in docs if d["doc_no"] in cur and cur[d["doc_no"]] != d["row_hash"]]
-    same = [d for d in docs if cur.get(d["doc_no"]) == d["row_hash"]]
+    keyf = lambda d: (d["doc_kind"], d["asset_code"], d["doc_no"])
+    new = [d for d in docs if keyf(d) not in cur]
+    upd = [d for d in docs if keyf(d) in cur and cur[keyf(d)] != d["row_hash"]]
+    same = [d for d in docs if cur.get(keyf(d)) == d["row_hash"]]
     return dict(new=new, update=upd, unchanged=same)
 
 
@@ -315,7 +461,11 @@ def compute_plan(db_path, today=None, **opt):
         if nskip:
             notes.append(f"ตัดช่วงวิ่งเร็วผิดปกติ {nskip} ช่วง")
         ev = events.get(a, [])
-        last_c = next((e for e in reversed(ev) if e["pm_type"] == "ศูนย์บริการ"), None)
+        # ถ้ารถมีงาน 'เปลี่ยนเครื่องยนต์' ให้ตัดประวัติ PM เก่าก่อนวันเปลี่ยนเครื่องยนต์ออก (เริ่มนับรอบใหม่จากวันเปลี่ยนเครื่องยนต์)
+        last_eng = next((e for e in reversed(ev) if e["pm_type"] == "เปลี่ยนเครื่องยนต์"), None)
+        if last_eng:
+            ev = [e for e in ev if e["doc_date"] >= last_eng["doc_date"]]
+        last_c = next((e for e in reversed(ev) if e["pm_type"] in ("ศูนย์บริการ", "เปลี่ยนเครื่องยนต์")), None)
         last_y = next((e for e in reversed(ev) if e["pm_type"] == "ลาน"), None)
         last = ev[-1] if ev else None
         cur_date, cur_km = (clean[-1] if clean else (None, None))
@@ -331,21 +481,31 @@ def compute_plan(db_path, today=None, **opt):
             rows.append(row)
             continue
         ptype = last["pm_type"]
-        interval = o["center_km"] if ptype == "ศูนย์บริการ" else o["yard_km"]
+        # งานเปลี่ยนเครื่องยนต์ ใช้เกณฑ์รอบถัดไปเหมือนศูนย์บริการ (20,000 กม. หรือ 6 เดือน) และเริ่มนับเลขไมล์เครื่องใหม่จาก 0 กม.
+        interval = o["center_km"] if ptype in ("ศูนย์บริการ", "เปลี่ยนเครื่องยนต์") else o["yard_km"]
         ld = _d(last["doc_date"])
-        # ระยะที่วิ่งไปแล้วตั้งแต่ PM ล่าสุด
+        # ระยะที่วิ่งไปแล้วตั้งแต่ PM / เปลี่ยนเครื่องยนต์ ล่าสุด
         run, how = None, ""
-        ek = last["km"] if (last["km"] and last["km"] >= 1000 and last["km_status"] != "ต้องตรวจ") else None
-        if ek is not None and clean and all(_consistent((ld, ek), p, o["max_km_day"]) for p in clean[-3:]):
-            run = (_inc(ek, cur_km) or 0) + (rate or 0) * max((today - cur_date).days, 0)
-            how = "เลขไมล์ PM + เลขไมล์ล่าสุด"
-        elif rate:
-            run = rate * max((today - ld).days, 0)
-            how = "กม./วัน × จำนวนวันตั้งแต่ PM"
-            if ek is None:
-                notes.append("PM ล่าสุดไม่มีเลขไมล์ที่ใช้ได้")
-            else:
-                notes.append("เลขไมล์ตอน PM ขัดกับประวัติ")
+        if ptype == "เปลี่ยนเครื่องยนต์":
+            if cur_date and cur_date >= ld and cur_km is not None and cur_km < 200000:
+                run = cur_km + (rate or 0) * max((today - cur_date).days, 0)
+                how = "เลขไมล์หลังเปลี่ยนเครื่อง (เริ่ม 0 กม.)"
+            elif rate:
+                run = rate * max((today - ld).days, 0)
+                how = "กม./วัน × จำนวนวันตั้งแต่เปลี่ยนเครื่องยนต์"
+            notes.append(f"เปลี่ยนเครื่องยนต์เมื่อ {ld:%d/%m/%Y} (เริ่มนับรอบ PM ศูนย์ 20,000 กม.)")
+        else:
+            ek = last["km"] if (last["km"] and last["km"] >= 1000 and last["km_status"] != "ต้องตรวจ") else None
+            if ek is not None and clean and all(_consistent((ld, ek), p, o["max_km_day"]) for p in clean[-3:]):
+                run = (_inc(ek, cur_km) or 0) + (rate or 0) * max((today - cur_date).days, 0)
+                how = "เลขไมล์ PM + เลขไมล์ล่าสุด"
+            elif rate:
+                run = rate * max((today - ld).days, 0)
+                how = "กม./วัน × จำนวนวันตั้งแต่ PM"
+                if ek is None:
+                    notes.append("PM ล่าสุดไม่มีเลขไมล์ที่ใช้ได้")
+                else:
+                    notes.append("เลขไมล์ตอน PM ขัดกับประวัติ")
         due_time = add_months(ld, o["months"])
         due_km_date, remain = None, None
         if run is not None:

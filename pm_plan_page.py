@@ -93,88 +93,631 @@ def _excel(plan_df, all_df, crit, title):
     return buf.getvalue()
 
 
-def _load_draft_pm_workbook(raw_bytes):
-    """อ่านไฟล์ร่าง Plan_PM_หัวลาก_ใหม่_รอยืนยัน.xlsx (4 ชีต) พร้อมคำนวณค่าสรุปไม่พึ่ง cached formula ของ Excel"""
-    import openpyxl
-    wb = openpyxl.load_workbook(io.BytesIO(raw_bytes), data_only=False)
-    out = dict(status=[], plan_2026=[], plan_2027=[], matrix=pd.DataFrame(), detail=pd.DataFrame(), hist=pd.DataFrame())
+def _build_draft_pm_from_db(db_path):
+    """คำนวณร่าง Plan PM หัวลาก 24 เดือน (ม.ค. 2026 – ธ.ค. 2027) สดจากฐานข้อมูล SQLite โดยตรง
+    (vr_wo_header / vr_wo_line / vr_issue_line -> service_doc + asset_master + repair_request + mileage_reading)"""
+    if not db_path or not os.path.exists(db_path):
+        return None
 
-    # 1) ชีตสรุป
-    s1_name = next((n for n in ("สรุป_Plan_PM_2026_2027", "สรุป_Plan_PM_รายเดือน") if n in wb.sheetnames), None)
-    if s1_name:
-        ws1 = wb[s1_name]
-        for r in range(6, ws1.max_row + 1):
-            a = ws1.cell(r, 1).value
-            b = ws1.cell(r, 2).value
-            if not a:
-                continue
-            sa = str(a).strip()
-            if sa.startswith("2026-") and len(sa) == 7:
-                ctr = int(b or 0)
-                yrd = int(ws1.cell(r, 3).value or 0)
-                ovd = int(ws1.cell(r, 4).value or 0)
-                tot = ctr + yrd + ovd
-                act_v = ws1.cell(r, 6).value
-                act = int(act_v) if isinstance(act_v, (int, float)) else None
-                pct = round(act * 100.0 / tot, 1) if (act is not None and tot > 0) else None
-                rep_v = ws1.cell(r, 8).value
-                rep = int(rep_v) if isinstance(rep_v, (int, float)) else None
-                old_v = ws1.cell(r, 9).value
-                old_p = int(old_v) if isinstance(old_v, (int, float)) else _old_plan(int(sa[5:7]))
-                out["plan_2026"].append({
-                    "เดือน": sa, "PM ศูนย์ (20k)": ctr, "PM ลาน (30k)": yrd, "ค้างยกยอด": ovd,
-                    "รวม Plan PM ใหม่": tot, "ทำ PM จริง": act, "% ตามแผน PM": pct,
-                    "ใบแจ้งซ่อมทั่วไป (Master)": rep, "Plan เดิมใน KPI": old_p,
-                })
-            elif sa.startswith("2027-") and len(sa) == 7:
-                ctr = int(b or 0)
-                yrd = int(ws1.cell(r, 3).value or 0)
-                tot = ctr + yrd
-                out["plan_2027"].append({
-                    "เดือน": sa, "PM ศูนย์ (20k)": ctr, "PM ลาน (30k)": yrd,
-                    "รวม Plan PM ใหม่": tot, "Plan เดิมใน KPI": _old_plan(int(sa[5:7])), "ส่วนต่าง (ใหม่-เดิม)": tot - _old_plan(int(sa[5:7])),
-                })
-            elif r <= 12 and isinstance(b, (int, float)) and not sa.startswith("รวม"):
-                out["status"].append({"สถานะ": sa, "จำนวน (คัน)": int(b), "หมายเหตุ": str(ws1.cell(r, 3).value or "")})
+    res = pm.compute_plan(db_path)
+    plan_by_plate = {r["asset_code"]: r for r in res["rows"]}
+    fleet_rate = res["fleet_rate"] or 177.0
+    today = dt.date.fromisoformat(res["today"])
+    cur_ym = f"{today.year:04d}-{today.month:02d}"
 
-    # 2) ตารางรายคัน (24 เดือน)
-    s2_name = next((n for n in ("ตาราง_PM_217คัน_2026_2027", "ตาราง_PM_217คัน_รายเดือน") if n in wb.sheetnames), None)
-    if s2_name:
-        ws2 = wb[s2_name]
-        hdrs = [str(ws2.cell(3, c).value or "").strip() for c in range(1, ws2.max_column + 1)]
-        rows2 = []
-        for r in range(4, ws2.max_row + 1):
-            p = ws2.cell(r, 1).value
-            if not p or str(p).startswith(("รวม", "ทำจริง")):
-                continue
-            rows2.append([str(ws2.cell(r, c).value or "") for c in range(1, len(hdrs) + 1)])
-        if rows2:
-            out["matrix"] = pd.DataFrame(rows2, columns=hdrs)
+    con = pm.connect(db_path)
+    try:
+        has_am = con.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='asset_master'").fetchone()[0] > 0
+        if has_am:
+            masters = [
+                r[0] for r in con.execute(
+                    "SELECT asset_code FROM asset_master WHERE asset_type='หัวลาก' AND is_active=1 ORDER BY sort_order, asset_code"
+                )
+            ]
+        else:
+            masters = []
+        if not masters:
+            masters = sorted(plan_by_plate.keys())
+        master_set = set(masters)
 
-    # 3) รายละเอียดรายคัน
-    if "รายละเอียด_217คัน" in wb.sheetnames:
-        ws3 = wb["รายละเอียด_217คัน"]
-        hdrs3 = [str(ws3.cell(1, c).value or "").strip() for c in range(1, ws3.max_column + 1)]
-        rows3 = [[ws3.cell(r, c).value for c in range(1, len(hdrs3) + 1)] for r in range(2, ws3.max_row + 1) if ws3.cell(r, 1).value]
-        if rows3:
-            out["detail"] = pd.DataFrame(rows3, columns=hdrs3)
+        # ใบแจ้งซ่อมทั่วไป (Master) รายเดือน ปี 2026
+        rr_by_month = {
+            r[0]: r[1]
+            for r in con.execute(
+                "SELECT report_month, COUNT(DISTINCT asset_code) FROM repair_request "
+                "WHERE asset_type='หัวลาก' AND in_iso='Yes' AND report_month LIKE '2026-%' GROUP BY 1"
+            )
+        }
 
-    # 4) ประวัติ PM จริง 2026
-    if "ประวัติ_PM_จริง_2026" in wb.sheetnames:
-        ws4 = wb["ประวัติ_PM_จริง_2026"]
-        hdrs4 = [str(ws4.cell(1, c).value or "").strip() for c in range(1, ws4.max_column + 1)]
-        rows4 = [[ws4.cell(r, c).value for c in range(1, len(hdrs4) + 1)] for r in range(2, ws4.max_row + 1) if ws4.cell(r, 1).value]
-        if rows4:
-            out["hist"] = pd.DataFrame(rows4, columns=hdrs4)
+        # ประวัติ PM จริง ปี 2026 (เฉพาะหัวลากใน Master)
+        pm_ev_rows = con.execute(
+            "SELECT substr(doc_date,1,7) AS ym, asset_code, doc_date, doc_no, doc_kind, pm_type, km, pm_items "
+            "FROM service_doc WHERE pm_type IS NOT NULL AND doc_date LIKE '2026-%' "
+            "ORDER BY doc_date, asset_code, doc_no"
+        ).fetchall()
+    finally:
+        con.close()
 
-    return out
+    ev_by_plate = {}
+    hist_list = []
+    act_plates_by_ym = {}
+    for ym, code, dd, dno, dkind, ptype, km, pitems in pm_ev_rows:
+        if code not in master_set:
+            continue
+        ev_by_plate.setdefault(code, []).append(dict(ym=ym, doc_date=dd, doc_no=dno, doc_kind=dkind, pm_type=ptype, km=km, pm_items=pitems))
+        act_plates_by_ym.setdefault(ym, set()).add(code)
+        try:
+            d_fmt = dt.date.fromisoformat(str(dd)[:10]).strftime("%d/%m/%Y")
+        except Exception:
+            d_fmt = str(dd or "")
+        hist_list.append({
+            "เดือน": ym,
+            "ทะเบียน": code,
+            "วันที่": d_fmt,
+            "เลขที่เอกสาร": dno,
+            "ชนิด": dkind,
+            "ประเภท PM": ptype,
+            "เลขไมล์": km,
+            "รายการน้ำมันเครื่อง": pitems or "",
+        })
+
+    months_24 = [f"2026-{m:02d}" for m in range(1, 13)] + [f"2027-{m:02d}" for m in range(1, 13)]
+    plan_cnt = {ym: {"ศูนย์บริการ": 0, "ลาน": 0, "ovd": 0} for ym in months_24}
+
+    status_counts = {"ครบกำหนด พ.ย. 2026": 0, "ตามรอบปกติ": 0, "เกินกำหนด (ค้าง)": 0, "ไม่มีประวัติ PM (2026)": 0}
+    detail_rows = []
+    matrix_rows = []
+
+    for code in masters:
+        pr = plan_by_plate.get(code, {})
+        evs = ev_by_plate.get(code, [])
+        rate = pr.get("km_day") or fleet_rate
+        m_cells = {ym: "" for ym in months_24}
+
+        if not evs:
+            st_lbl = "ไม่มีประวัติ PM (2026)"
+            status_counts[st_lbl] += 1
+            detail_rows.append({
+                "ทะเบียน": code,
+                "วันที่ PM ล่าสุด": "",
+                "ประเภท PM": "ไม่มีประวัติ PM (2026)",
+                "จำนวนครั้ง PM ปี 2026": 0,
+                "เลขไมล์ตอน PM": None,
+                "เลขไมล์ล่าสุด": pr.get("last_km"),
+                "กม./วัน": round(rate, 1) if rate else None,
+                "รอบ (กม.)": None,
+                "รอบ (วัน)": None,
+                "ครบกำหนดถัดไป": "",
+                "สถานะ ณ ปัจจุบัน": st_lbl,
+                "หมายเหตุ": "ไม่พบรายการเปลี่ยนน้ำมันเครื่องในรายงาน 2026 — รอคุณแขกกำหนดรอบเริ่มต้น",
+            })
+            matrix_rows.append([code, "ไม่มีประวัติ PM (2026)"] + [m_cells[ym] for ym in months_24])
+            continue
+
+        last_ev = evs[-1]
+        ptype = last_ev["pm_type"]
+        is_center_like = ptype in ("ศูนย์บริการ", "เปลี่ยนเครื่องยนต์")
+        tag = "ศูนย์" if is_center_like else "ลาน"
+        interval_km = 20000 if is_center_like else 30000
+        cycle_days = max(30, min(182, int(round(interval_km / rate)))) if rate else 180
+
+        # 1) ทำ PM / เปลี่ยนเครื่องยนต์ จริงในปี 2026
+        for e in evs:
+            if e["pm_type"] == "เปลี่ยนเครื่องยนต์":
+                m_cells[e["ym"]] = "เปลี่ยนเครื่องยนต์"
+                plan_cnt[e["ym"]]["ศูนย์บริการ"] += 1
+            else:
+                e_tag = "ศูนย์" if e["pm_type"] == "ศูนย์บริการ" else "ลาน"
+                m_cells[e["ym"]] = f"ทำจริง-{e_tag}"
+                plan_cnt[e["ym"]][e["pm_type"]] += 1
+
+        # 2) แผนย้อนหลังก่อนทำจริงครั้งแรกในปี 2026 (เฉพาะกรณีที่ครั้งแรกไม่ใช่เปลี่ยนเครื่องยนต์)
+        first_ev = evs[0]
+        if first_ev["pm_type"] != "เปลี่ยนเครื่องยนต์":
+            f_type = first_ev["pm_type"]
+            f_tag = "ศูนย์" if f_type == "ศูนย์บริการ" else "ลาน"
+            f_int = 20000 if f_type == "ศูนย์บริการ" else 30000
+            f_cyc = max(30, min(182, int(round(f_int / rate)))) if rate else 180
+            d_back = dt.date.fromisoformat(first_ev["doc_date"]) - dt.timedelta(days=f_cyc)
+            while d_back >= dt.date(2026, 1, 1):
+                ym_b = f"{d_back.year:04d}-{d_back.month:02d}"
+                if ym_b in m_cells and not m_cells[ym_b]:
+                    m_cells[ym_b] = f"แผน-{f_tag}"
+                    plan_cnt[ym_b][f_type] += 1
+                d_back -= dt.timedelta(days=f_cyc)
+
+        # 3) กำหนดครบถัดไป & สถานะ (อิงจากイベントล่าสุดตั้งแต่เปลี่ยนเครื่องยนต์เป็นต้นมา)
+        plan_type_next = "ศูนย์บริการ" if is_center_like else "ลาน"
+        due_iso = pr.get("due_date")
+        due_d = dt.date.fromisoformat(due_iso) if due_iso else (dt.date.fromisoformat(last_ev["doc_date"]) + dt.timedelta(days=cycle_days))
+        due_ym = f"{due_d.year:04d}-{due_d.month:02d}"
+
+        if due_ym < "2026-11":
+            st_lbl = "เกินกำหนด (ค้าง)"
+            status_counts[st_lbl] += 1
+            if due_ym in m_cells and not m_cells[due_ym]:
+                m_cells[due_ym] = f"ครบกำหนด(ค้าง)-{tag}"
+                plan_cnt[due_ym][plan_type_next] += 1
+            if not m_cells["2026-12"]:
+                m_cells["2026-12"] = f"ค้างยกยอด-{tag}"
+            plan_cnt["2026-12"]["ovd"] += 1
+            d_next = dt.date(2026, 12, 15) + dt.timedelta(days=cycle_days)
+        elif due_ym == "2026-11":
+            st_lbl = "ครบกำหนด พ.ย. 2026"
+            status_counts[st_lbl] += 1
+            if not m_cells["2026-11"]:
+                m_cells["2026-11"] = f"แผน-{tag}"
+                plan_cnt["2026-11"][plan_type_next] += 1
+            if not m_cells["2026-12"]:
+                m_cells["2026-12"] = f"ค้างยกยอด-{tag}"
+            plan_cnt["2026-12"]["ovd"] += 1
+            d_next = dt.date(2026, 12, 15) + dt.timedelta(days=cycle_days)
+        else:
+            st_lbl = "ตามรอบปกติ"
+            status_counts[st_lbl] += 1
+            d_next = due_d
+
+        # 4) แผนล่วงหน้า 2026-12 .. 2027-12
+        while d_next <= dt.date(2027, 12, 31):
+            ym_f = f"{d_next.year:04d}-{d_next.month:02d}"
+            if ym_f in m_cells and not m_cells[ym_f]:
+                m_cells[ym_f] = f"แผน-{tag}"
+                plan_cnt[ym_f][plan_type_next] += 1
+            d_next += dt.timedelta(days=cycle_days)
+
+        d_last_fmt = dt.date.fromisoformat(last_ev["doc_date"]).strftime("%d/%m/%Y")
+        d_due_fmt = due_d.strftime("%d/%m/%Y")
+        detail_rows.append({
+            "ทะเบียน": code,
+            "วันที่ PM ล่าสุด": d_last_fmt,
+            "ประเภท PM": ptype,
+            "จำนวนครั้ง PM ปี 2026": len(evs),
+            "เลขไมล์ตอน PM": last_ev.get("km"),
+            "เลขไมล์ล่าสุด": pr.get("last_km"),
+            "กม./วัน": round(rate, 1) if rate else None,
+            "รอบ (กม.)": interval_km,
+            "รอบ (วัน)": cycle_days,
+            "ครบกำหนดถัดไป": d_due_fmt,
+            "สถานะ ณ ปัจจุบัน": st_lbl,
+            "หมายเหตุ": f"{pr.get('rate_src') or 'ประวัติเลขไมล์'} · {pr.get('due_by') or ''}",
+        })
+        matrix_rows.append([code, ptype] + [m_cells[ym] for ym in months_24])
+
+    status_list = [
+        {"สถานะ": "ครบกำหนด พ.ย. 2026", "จำนวน (คัน)": status_counts["ครบกำหนด พ.ย. 2026"], "หมายเหตุ": "รวมยกยอดเข้า ธ.ค. 2026"},
+        {"สถานะ": "ตามรอบปกติ", "จำนวน (คัน)": status_counts["ตามรอบปกติ"], "หมายเหตุ": "คำนวณรอบตามระยะ/6 เดือน จาก SQLite"},
+        {"สถานะ": "เกินกำหนด (ค้าง)", "จำนวน (คัน)": status_counts["เกินกำหนด (ค้าง)"], "หมายเหตุ": "รวมยกยอดเข้า ธ.ค. 2026"},
+        {"สถานะ": "ไม่มีประวัติ PM (2026)", "จำนวน (คัน)": status_counts["ไม่มีประวัติ PM (2026)"], "หมายเหตุ": "แยกไว้รอคุณแขกกำหนดรอบเริ่มต้น"},
+    ]
+
+    plan_2026 = []
+    for m in range(1, 13):
+        ym = f"2026-{m:02d}"
+        ctr = plan_cnt[ym]["ศูนย์บริการ"]
+        yrd = plan_cnt[ym]["ลาน"]
+        ovd = plan_cnt[ym]["ovd"]
+        tot = ctr + yrd + ovd
+        act = len(act_plates_by_ym.get(ym, set())) if ym <= cur_ym else None
+        pct = round(act * 100.0 / tot, 1) if (act is not None and tot > 0) else None
+        rep = rr_by_month.get(ym)
+        old_p = _old_plan(m)
+        plan_2026.append({
+            "เดือน": ym, "PM ศูนย์ (20k)": ctr, "PM ลาน (30k)": yrd, "ค้างยกยอด": ovd,
+            "รวม Plan PM ใหม่": tot, "ทำ PM จริง": act, "% ตามแผน PM": pct,
+            "ใบแจ้งซ่อมทั่วไป (Master)": rep, "Plan เดิมใน KPI": old_p,
+        })
+
+    plan_2027 = []
+    for m in range(1, 13):
+        ym = f"2027-{m:02d}"
+        ctr = plan_cnt[ym]["ศูนย์บริการ"]
+        yrd = plan_cnt[ym]["ลาน"]
+        tot = ctr + yrd
+        old_p = _old_plan(m)
+        plan_2027.append({
+            "เดือน": ym, "PM ศูนย์ (20k)": ctr, "PM ลาน (30k)": yrd,
+            "รวม Plan PM ใหม่": tot, "Plan เดิมใน KPI": old_p, "ส่วนต่าง (ใหม่-เดิม)": tot - old_p,
+        })
+
+    mat_hdrs = ["ทะเบียน", "ประเภท PM ล่าสุด"] + months_24
+    return dict(
+        status=status_list,
+        plan_2026=plan_2026,
+        plan_2027=plan_2027,
+        matrix=pd.DataFrame(matrix_rows, columns=mat_hdrs),
+        detail=pd.DataFrame(detail_rows),
+        hist=pd.DataFrame(hist_list),
+        fleet_rate=fleet_rate,
+        today_str=today.strftime("%d/%m/%Y"),
+    )
 
 
-def _df_to_excel_bytes(sheets_dict):
+def _classify_pm4_line(item_name, item_code="", doc_kind=""):
+    """จำแนกรายการซ่อม/เบิกพัสดุจริง 1 บรรทัด เข้า 4 คอลัมน์ PM ประจำเดือน:
+      c1 = เช็คระยะเปลี่ยนถ่ายน้ำมันเครื่อง (30,000 km / 6 เดือน)
+      c2 = เช็คระยะเปลี่ยนถ่ายน้ำมันเฟืองท้าย/เกียร์ (60,000 km / 6 เดือน)
+      c3 = เช็คช่วงล่าง (ระบบเบรก / ระบบคลัทช์ / จาระบีลูกปืนล้อ) (120,000 km)
+      c4 = ตรวจเช็คลมยาง / ดอกยางคงเหลือ
+    """
+    s = str(item_name or "").strip()
+    su = s.upper()
+    c1 = c2 = c3 = c4 = False
+
+    # Col 1: เปลี่ยนถ่ายน้ำมันเครื่อง / เปลี่ยนเครื่องยนต์
+    if doc_kind == "W/O":
+        if pm.is_center_item(s, item_code) or pm.is_engine_replace_item(s, item_code):
+            c1 = True
+    else:
+        if pm.is_yard_item(s):
+            c1 = True
+
+    # Col 2: เปลี่ยนถ่ายน้ำมันเฟืองท้าย / น้ำมันเกียร์ / กรองเกียร์ / กรองเฟืองท้าย
+    if any(k in s for k in ("น้ำมันเกียร์", "น้ำมันเฟืองท้าย", "กรองเกียร์", "กรองเฟืองท้าย")) or any(
+        k in su for k in ("GEAR OIL", "DIFF OIL", "AXLE OIL", "TRANSMISSION OIL")
+    ):
+        c2 = True
+
+    # Col 3: ช่วงล่าง (ระบบเบรก / ระบบคลัทช์ / จาระบีลูกปืนล้อ)
+    if any(
+        k in s
+        for k in (
+            "ผ้าเบรก", "ผ้าเบรค", "จานเบรก", "จานเบรค", "น้ำมันเบรก", "น้ำมันเบรค", "หม้อลมเบรก", "หม้อลมเบรค",
+            "คลัทช์", "คลัช", "ครัช",
+            "จาระบี", "จารบี", "ลูกปืนล้อ", "ช่วงล่าง", "ตั้งเบรก", "ตั้งเบรค", "ตรวจเบรก", "ตรวจเบรค",
+        )
+    ) or any(k in su for k in ("BRAKE", "CLUTCH", "GREASE", "WHEEL BEARING")):
+        c3 = True
+
+    # Col 4: ตรวจเช็คลมยาง / ดอกยาง / สลับยาง / ตั้งศูนย์ / ถ่วงล้อ / ปะยาง / เปลี่ยนยาง
+    if any(
+        k in s
+        for k in ("ลมยาง", "ดอกยาง", "สลับยาง", "ปะยาง", "เปลี่ยนยาง", "ตั้งศูนย์", "ถ่วงล้อ", "ยางนอก")
+    ) or any(k in su for k in ("TIRE", "TYRE")):
+        c4 = True
+
+    return c1, c2, c3, c4
+
+
+def _build_monthly_pm_template_rows(db_path, ym):
+    """สร้างข้อมูลตาราง 'แผนซ่อมบำรุงรักษา - หัวลาก' ตาม Template ประจำเดือน ym (YYYY-MM) จากรายการซ่อมจริงใน SQLite"""
+    import calendar
+    y, m = int(ym[:4]), int(ym[5:7])
+    last_day = calendar.monthrange(y, m)[1]
+    date_range_txt = f"ตั้งแต่วันที่ 01/{m:02d}/{y:04d} - {last_day:02d}/{m:02d}/{y:04d}"
+
+    COL1 = "เช็คระยะเปลี่ยน\nถ่ายน้ำมันเครื่อง\n(ระบบไฟ/ระบบลม)\nเช็คทั่วไป 30,000\nkm หรือ 6 เดือน"
+    COL2 = "เช็คระยะเปลี่ยนถ่าย\nน้ำมันเฟืองท้าย/เกียร์\n(ระบบเกียร์) 60,000\nkm หรือ 6 เดือน"
+    COL3 = "เช็คช่วงล่าง\n(ระบบเบรก / ระบบ\nคลัทช์/\nจาระบีลูกปืนล้อ)\n120,000 km"
+    COL4 = "ตรวจเช็คลมยาง /\nดอกยางคงเหลือ"
+
+    con = pm.connect(db_path)
+    try:
+        has_am = con.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='asset_master'").fetchone()[0] > 0
+        if has_am:
+            masters = [
+                r[0] for r in con.execute(
+                    "SELECT asset_code FROM asset_master WHERE asset_type='หัวลาก' AND is_active=1 ORDER BY sort_order, asset_code"
+                )
+            ]
+        else:
+            masters = []
+        master_set = set(masters)
+
+        # ดึงยี่ห้อ/รุ่นรถจาก vr_wo_header / vr_issue_line
+        brand_map = {}
+        try:
+            for plate, br in con.execute(
+                "SELECT plate, MAX(brand) FROM ("
+                "  SELECT plate, brand FROM vr_wo_header WHERE IFNULL(brand,'') != '' "
+                "  UNION ALL "
+                "  SELECT plate, brand FROM vr_issue_line WHERE IFNULL(brand,'') != '' "
+                ") GROUP BY plate"
+            ):
+                brand_map[plate] = br or ""
+        except Exception:
+            pass
+
+        # ตรวจรายการซ่อมจริงในเดือน ym จากทั้ง vr_wo_line (ศูนย์) และ vr_issue_line (ลาน)
+        flags = {p: [False, False, False, False] for p in masters}
+        refs_by_plate = {p: [] for p in masters}
+        seen_ref = set()
+
+        def _add_ref(plate, label):
+            key = (plate, label)
+            if key not in seen_ref:
+                seen_ref.add(key)
+                refs_by_plate[plate].append(label)
+
+        try:
+            for plate, dno, icode, iname in con.execute(
+                "SELECT plate, doc_no, item_code, item_name FROM vr_wo_line "
+                "WHERE substr(doc_date,1,7) = ? ORDER BY doc_date, doc_no, line_no",
+                (ym,),
+            ):
+                if plate not in master_set:
+                    continue
+                c1, c2, c3, c4 = _classify_pm4_line(iname, icode, "W/O")
+                if c1 or c2 or c3 or c4:
+                    if c1: flags[plate][0] = True
+                    if c2: flags[plate][1] = True
+                    if c3: flags[plate][2] = True
+                    if c4: flags[plate][3] = True
+                    _add_ref(plate, f"ศูนย์ W/O {dno}")
+        except Exception:
+            pass
+
+        try:
+            for plate, dno, iname in con.execute(
+                "SELECT plate, doc_no, inv_name FROM vr_issue_line "
+                "WHERE substr(doc_date,1,7) = ? ORDER BY doc_date, doc_no, line_no",
+                (ym,),
+            ):
+                if plate not in master_set:
+                    continue
+                c1, c2, c3, c4 = _classify_pm4_line(iname, "", "WX")
+                if c1 or c2 or c3 or c4:
+                    if c1: flags[plate][0] = True
+                    if c2: flags[plate][1] = True
+                    if c3: flags[plate][2] = True
+                    if c4: flags[plate][3] = True
+                    _add_ref(plate, f"ลาน WX {dno}")
+        except Exception:
+            pass
+    finally:
+        con.close()
+
+    rows = []
+    n_checked = 0
+    for plate in masters:
+        f1, f2, f3, f4 = flags[plate]
+        if f1 or f2 or f3 or f4:
+            n_checked += 1
+        rows.append({
+            "ทะเบียน": plate,
+            "รุ่นรถ": brand_map.get(plate, ""),
+            COL1: "Yes" if f1 else "",
+            COL2: "Yes" if f2 else "",
+            COL3: "Yes" if f3 else "",
+            COL4: "Yes" if f4 else "",
+            "อ้างอิงเอกสาร": " , ".join(refs_by_plate[plate]),
+        })
+    return rows, date_range_txt, n_checked
+
+
+def _write_monthly_pm_template_sheet(wb, rows, date_range_txt, sheet_name="สรุป_PM_ประจำเดือน", logo_path=None):
+    """เขียนชีต 'สรุป_PM_ประจำเดือน' ตาม Template แบบฟอร์ม แผนซ่อมบำรุงรักษา - หัวลาก"""
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    ws = wb.create_sheet(sheet_name[:31])
+    f_co_th = Font(name="Tahoma", size=12, bold=True, color="1F4E78")
+    f_co_en = Font(name="Tahoma", size=10, bold=True, color="1F4E78")
+    f_co_sub = Font(name="Tahoma", size=9, color="374151")
+    f_doc = Font(name="Tahoma", size=12, bold=True, color="000000")
+    f_date = Font(name="Tahoma", size=10, bold=True, color="1F4E78")
+    f_hdr = Font(name="Tahoma", size=9.5, bold=True, color="FFFFFF")
+    f_cell = Font(name="Tahoma", size=9.5, color="1F2937")
+    f_yes = Font(name="Tahoma", size=9.5, bold=True, color="0F5132")
+    fill_hdr = PatternFill("solid", fgColor="1F4E78")
+    fill_yes = PatternFill("solid", fgColor="D1E7DD")
+    thin = Side(style="thin", color="BFBFBF")
+    b_thin = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    # โลโก้บริษัท (ถ้ามี)
+    if logo_path and os.path.exists(logo_path):
+        try:
+            from openpyxl.drawing.image import Image as XLImage
+            img = XLImage(logo_path)
+            img.width = 115
+            img.height = 56
+            ws.add_image(img, "A1")
+        except Exception:
+            pass
+
+    # หัวบริษัท (Row 1–4 คอลัมน์ C–G)
+    ws.merge_cells("C1:G1"); ws["C1"] = "บริษัท สปีด อินเตอร์ ทรานสปอร์ต จำกัด"; ws["C1"].font = f_co_th
+    ws.merge_cells("C2:G2"); ws["C2"] = "SPEED INTER TRANSPORT CO.,LTD"; ws["C2"].font = f_co_en
+    ws.merge_cells("C3:G3"); ws["C3"] = "36/34-36 KhlongSong Ton Nun, Lat Krabang, Bangkok 10520."; ws["C3"].font = f_co_sub
+    ws.merge_cells("C4:G4"); ws["C4"] = "เลขประจำตัวผู้เสียภาษี : 0105543094654"; ws["C4"].font = f_co_sub
+    ws.row_dimensions[1].height = 20
+    ws.row_dimensions[2].height = 17
+    ws.row_dimensions[3].height = 15
+    ws.row_dimensions[4].height = 15
+    ws.row_dimensions[5].height = 8
+
+    # ชื่อเอกสาร & ช่วงวันที่ (Row 6–7)
+    ws.merge_cells("A6:G6"); ws["A6"] = "แผนซ่อมบำรุงรักษา - หัวลาก"; ws["A6"].font = f_doc
+    ws.merge_cells("A7:G7"); ws["A7"] = date_range_txt; ws["A7"].font = f_date
+    ws.row_dimensions[6].height = 22
+    ws.row_dimensions[7].height = 18
+
+    # หัวตาราง (Row 8)
+    headers = [
+        "ทะเบียน",
+        "รุ่นรถ",
+        "เช็คระยะเปลี่ยน\nถ่ายน้ำมันเครื่อง\n(ระบบไฟ/ระบบลม)\nเช็คทั่วไป 30,000\nkm หรือ 6 เดือน",
+        "เช็คระยะเปลี่ยนถ่าย\nน้ำมันเฟืองท้าย/เกียร์\n(ระบบเกียร์) 60,000\nkm หรือ 6 เดือน",
+        "เช็คช่วงล่าง\n(ระบบเบรก / ระบบ\nคลัทช์/\nจาระบีลูกปืนล้อ)\n120,000 km",
+        "ตรวจเช็คลมยาง /\nดอกยางคงเหลือ",
+        "อ้างอิงเอกสาร",
+    ]
+    widths = [13, 13, 21, 21, 21, 18, 30]
+    ws.row_dimensions[8].height = 66
+    for j, (h, w) in enumerate(zip(headers, widths), start=1):
+        c = ws.cell(8, j, h)
+        c.font = f_hdr
+        c.fill = fill_hdr
+        c.border = b_thin
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        ws.column_dimensions[get_column_letter(j)].width = w
+
+    # ข้อมูลรายคัน (Row 9 ..)
+    for idx, r in enumerate(rows, start=9):
+        ws.row_dimensions[idx].height = 19
+        vals = [r[h] for h in headers]
+        for j, v in enumerate(vals, start=1):
+            c = ws.cell(idx, j, v)
+            c.border = b_thin
+            if j in (3, 4, 5, 6) and v in ("Yes", "Check Yes"):
+                c.font = f_yes
+                c.fill = fill_yes
+                c.alignment = Alignment(horizontal="center", vertical="center")
+            elif j in (1, 2, 3, 4, 5, 6):
+                c.font = f_cell
+                c.alignment = Alignment(horizontal="center", vertical="center")
+            else:
+                c.font = f_cell
+                c.alignment = Alignment(horizontal="left", vertical="center")
+
+    ws.freeze_panes = "C9"
+    if rows:
+        ws.auto_filter.ref = f"A8:G{8 + len(rows)}"
+    ws.page_setup.orientation = ws.ORIENTATION_PORTRAIT
+    ws.page_setup.paperSize = ws.PAPERSIZE_A4
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.print_title_rows = "1:8"
+    ws.views.sheetView[0].showGridLines = True
+
+
+def _df_to_excel_bytes(sheets_dict, report_title="ร่าง Plan PM หัวลาก 2026–2027", subtitle=None, monthly_template=None):
+    """Export DataFrames เป็น Excel พร้อมหัวรายงานสวยงาม, Freeze Panes และ Excel Table (ListObject)"""
+    import re
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+    from openpyxl.worksheet.table import Table, TableStyleInfo
+
+    _ILLEGAL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+    def _clean(v):
+        if isinstance(v, str):
+            return _ILLEGAL_RE.sub("", v)
+        return v
+
+    subtitle_txt = subtitle or f"ข้อมูลสดจากฐานข้อมูล SQLite · พิมพ์เมื่อ {dt.datetime.now():%d/%m/%Y %H:%M} · รอคุณแขก (เจ้าของระบบ) ยืนยัน"
+
+    f_title = Font(name="Tahoma", size=13, bold=True, color="FFFFFF")
+    f_sub = Font(name="Tahoma", size=9.5, italic=True, color="1F4E78")
+    f_hdr = Font(name="Tahoma", size=10, bold=True, color="FFFFFF")
+    f_cell = Font(name="Tahoma", size=10, color="1F2937")
+    fill_title = PatternFill("solid", fgColor="1F4E78")
+    fill_sub = PatternFill("solid", fgColor="E8F1FA")
+    fill_hdr = PatternFill("solid", fgColor="2F5597")
+    thin = Side(style="thin", color="D0D7DE")
+    b_thin = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    int_cols = {
+        "PM ศูนย์ (20k)", "PM ลาน (30k)", "ค้างยกยอด", "รวม Plan PM ใหม่",
+        "ทำ PM จริง", "ใบแจ้งซ่อมทั่วไป (Master)", "Plan เดิมใน KPI", "ส่วนต่าง (ใหม่-เดิม)",
+        "จำนวนครั้ง PM ปี 2026", "เลขไมล์ตอน PM", "เลขไมล์ล่าสุด", "เลขไมล์", "รอบ (กม.)", "รอบ (วัน)",
+    }
+    dec_cols = {"กม./วัน", "% ตามแผน PM"}
+    wide_cols = {"รายการน้ำมันเครื่อง", "หมายเหตุ"}
+    med_cols = {"ประเภท PM", "ประเภท PM ล่าสุด", "สถานะ ณ ปัจจุบัน", "เลขที่เอกสาร"}
+
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as xw:
-        for name, df in sheets_dict.items():
-            (df if len(df) else pd.DataFrame({"ไม่มีข้อมูล": []})).to_excel(xw, sheet_name=name[:31], index=False)
+        for idx_s, (name, raw_df) in enumerate(sheets_dict.items(), start=1):
+            sh_name = name[:31]
+            df = raw_df.copy() if (raw_df is not None and len(raw_df)) else pd.DataFrame({"ไม่มีข้อมูล": []})
+            # ทำความสะอาดอักขระควบคุมก่อนเขียน
+            for c in df.columns:
+                if df[c].dtype == object:
+                    df[c] = df[c].map(_clean)
+            # เขียนตารางเริ่มที่แถว 4 (แถว 1 = หัวรายงาน, แถว 2 = คำอธิบาย, แถว 3 = เว้นว่าง)
+            df.to_excel(xw, sheet_name=sh_name, index=False, startrow=3)
+            ws = xw.sheets[sh_name]
+            ncols = max(1, len(df.columns))
+            nrows = len(df)
+            last_col = get_column_letter(ncols)
+
+            # หัวรายงาน (Row 1-2)
+            ws.merge_cells(f"A1:{last_col}1")
+            ws["A1"] = f"{report_title} — {name}"
+            ws["A1"].font = f_title
+            ws["A1"].fill = fill_title
+            ws["A1"].alignment = Alignment(horizontal="left", vertical="center", indent=1)
+            ws.row_dimensions[1].height = 28
+
+            ws.merge_cells(f"A2:{last_col}2")
+            ws["A2"] = subtitle_txt
+            ws["A2"].font = f_sub
+            ws["A2"].fill = fill_sub
+            ws["A2"].alignment = Alignment(horizontal="left", vertical="center", indent=1)
+            ws.row_dimensions[2].height = 20
+            ws.row_dimensions[3].height = 8
+
+            # จัดรูปแบบหัวตาราง (Row 4)
+            ws.row_dimensions[4].height = 24
+            for j, col_name in enumerate(df.columns, start=1):
+                c_hdr = ws.cell(4, j)
+                c_hdr.font = f_hdr
+                c_hdr.fill = fill_hdr
+                c_hdr.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                c_hdr.border = b_thin
+
+            # จัดรูปแบบข้อมูล (Row 5 .. 4+nrows)
+            for r_i in range(5, 5 + nrows):
+                ws.row_dimensions[r_i].height = 19
+                for j, col_name in enumerate(df.columns, start=1):
+                    cell = ws.cell(r_i, j)
+                    cell.font = f_cell
+                    cell.border = b_thin
+                    if col_name in int_cols:
+                        cell.number_format = "#,##0"
+                        cell.alignment = Alignment(horizontal="right", vertical="center")
+                    elif col_name in dec_cols:
+                        cell.number_format = "#,##0.0"
+                        cell.alignment = Alignment(horizontal="right", vertical="center")
+                    elif col_name in ("ทะเบียน", "เดือน", "วันที่", "วันที่ PM ล่าสุด", "ครบกำหนดถัดไป", "ชนิด"):
+                        cell.alignment = Alignment(horizontal="center", vertical="center")
+                    else:
+                        cell.alignment = Alignment(horizontal="left", vertical="center")
+
+            # ปรับความกว้างคอลัมน์อัตโนมัติ
+            for j, col_name in enumerate(df.columns, start=1):
+                col_ltr = get_column_letter(j)
+                if col_name in wide_cols:
+                    ws.column_dimensions[col_ltr].width = 44
+                elif col_name in med_cols:
+                    ws.column_dimensions[col_ltr].width = 22
+                elif str(col_name).startswith(("2026-", "2027-")):
+                    ws.column_dimensions[col_ltr].width = 14
+                else:
+                    max_len = max([len(str(col_name))] + [len(str(v)) for v in df[col_name].head(200).tolist()])
+                    ws.column_dimensions[col_ltr].width = max(12, min(32, max_len + 4))
+
+            # Freeze Panes (ตรึงหัวรายงาน + หัวตาราง; ชีต Matrix ตรึงคอลัมน์ทะเบียน + ประเภท PM ด้วย)
+            if "ทะเบียน" in df.columns and any(str(c).startswith(("2026-", "2027-")) for c in df.columns):
+                ws.freeze_panes = "C5"
+            else:
+                ws.freeze_panes = "A5"
+
+            # สร้าง Excel Table (ListObject) เมื่อมีแถวข้อมูลอย่างน้อย 1 แถว
+            if nrows >= 1:
+                tbl_ref = f"A4:{last_col}{4 + nrows}"
+                tbl = Table(displayName=f"Tbl_PM_{idx_s}", ref=tbl_ref)
+                tbl.tableStyleInfo = TableStyleInfo(
+                    name="TableStyleMedium9",
+                    showFirstColumn=False,
+                    showLastColumn=False,
+                    showRowStripes=True,
+                    showColumnStripes=False,
+                )
+                ws.add_table(tbl)
+
+            ws.views.sheetView[0].showGridLines = True
+
+        # เพิ่มชีต 'สรุป_PM_ประจำเดือน' ตาม Template (ถ้ามีการส่ง monthly_template มา)
+        if monthly_template:
+            _write_monthly_pm_template_sheet(
+                xw.book,
+                monthly_template["rows"],
+                monthly_template["date_range_txt"],
+                sheet_name=monthly_template.get("sheet_name", "สรุป_PM_ประจำเดือน"),
+                logo_path=monthly_template.get("logo_path"),
+            )
     return buf.getvalue()
 
 
@@ -201,16 +744,85 @@ def _find_vehicle_report_file(app_dir, plate):
     return None
 
 
-def _lookup_doc_detail(app_dir, plate, doc_no, doc_kind=None):
-    """ดึงรายละเอียดรายการทั้งหมดของเอกสาร W/O หรือ WX จากไฟล์รายงานรายคันในเครื่อง"""
+def _lookup_doc_detail(app_dir, plate, doc_no, doc_kind=None, db_path=None):
+    """ดึงรายละเอียดรายการทั้งหมดของเอกสาร W/O หรือ WX จากฐานข้อมูล SQLite (vr_wo_header/line, vr_issue_line) ก่อน แล้วค่อย fallback ไฟล์ .xls"""
+    raw_no = str(doc_no or "").strip()
+    norm_no = raw_no.split()[-1] if " " in raw_no else raw_no
+    kind_u = str(doc_kind or "").upper()
+
+    if db_path and os.path.exists(db_path):
+        try:
+            con = rr.connect(db_path)
+            try:
+                if kind_u in ("", "W/O", "WO"):
+                    hdr = con.execute(
+                        "SELECT * FROM vr_wo_header WHERE plate=? AND doc_no IN (?,?)",
+                        (plate, raw_no, norm_no),
+                    ).fetchone()
+                    lines = con.execute(
+                        "SELECT * FROM vr_wo_line WHERE plate=? AND doc_no IN (?,?) ORDER BY line_no",
+                        (plate, raw_no, norm_no),
+                    ).fetchall()
+                    if hdr or lines:
+                        return dict(
+                            kind="W/O (ใบสั่งซ่อมภายนอก)",
+                            file=(hdr["source_file"] if hdr else (lines[0]["source_file"] if lines else "SQLite DB")),
+                            doc_no=raw_no,
+                            date=(hdr["doc_date"] if hdr else (lines[0]["doc_date"] if lines else "")),
+                            vendor=((hdr["vendor_th"] or hdr["vendor_en"]) if hdr else (lines[0]["vendor_en"] if lines else "")),
+                            mileage=(hdr["mileage_km"] if hdr else None),
+                            net=(hdr["net"] if hdr else sum(float(l["total"] or 0) for l in lines)),
+                            remark=(hdr["remark"] or "" if hdr else ""),
+                            lines=[
+                                {
+                                    "ลำดับ": l["line_no"],
+                                    "รหัสรายการ": l["item_code"] or "",
+                                    "รายละเอียดรายการ": l["item_name"] or "",
+                                    "จำนวน": l["qty"],
+                                    "ราคา/หน่วย": l["unit_price"],
+                                    "จำนวนเงิน (บาท)": l["total"],
+                                }
+                                for l in lines
+                            ],
+                        )
+                if kind_u in ("", "WX"):
+                    lines = con.execute(
+                        "SELECT * FROM vr_issue_line WHERE plate=? AND doc_no IN (?,?) ORDER BY line_no",
+                        (plate, raw_no, norm_no),
+                    ).fetchall()
+                    if lines:
+                        first = lines[0]
+                        return dict(
+                            kind="WX (ใบเบิกพัสดุลาน)",
+                            file=first["source_file"] or "SQLite DB",
+                            doc_no=raw_no,
+                            date=first["doc_date"] or "",
+                            vendor=f"{first['store'] or ''} {first['dept'] or ''}".strip(),
+                            mileage=first["mileage_km"],
+                            net=sum(float(l["total"] or 0) for l in lines),
+                            remark=first["remark"] or "",
+                            lines=[
+                                {
+                                    "ลำดับ": l["line_no"],
+                                    "รหัสพัสดุ": l["inv_code"] or "",
+                                    "รายการพัสดุ": l["inv_name"] or "",
+                                    "จำนวน": l["qty"],
+                                    "ราคา/หน่วย": l["unit_price"],
+                                    "จำนวนเงิน (บาท)": l["total"],
+                                    "หมายเหตุ": l["remark"] or "",
+                                }
+                                for l in lines
+                            ],
+                        )
+            finally:
+                con.close()
+        except Exception:
+            pass
+
     fpath = _find_vehicle_report_file(app_dir, plate)
     if not fpath:
         return None
     rep = _parse_vehicle_report_cached(fpath)
-    raw_no = str(doc_no or "").strip()
-    # ตัด prefix เช่น 'W/O ' หรือ 'WX ' ถ้ามี
-    norm_no = raw_no.split()[-1] if " " in raw_no else raw_no
-    kind_u = str(doc_kind or "").upper()
 
     # 1) ค้นใน W/O
     if kind_u in ("", "W/O", "WO"):
@@ -274,11 +886,14 @@ def _render_doc_detail_panel(app_dir, db, plate, doc_no, doc_kind=None, doc_date
     full = full or {}
     with st.container(border=True):
         st.markdown(f"### 🔍 รายละเอียดเอกสาร `{doc_no}` · ทะเบียน `{plate}`")
-        detail = _lookup_doc_detail(app_dir, plate, doc_no, doc_kind)
+        detail = _lookup_doc_detail(app_dir, plate, doc_no, doc_kind, db_path=db)
         if detail:
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("ประเภทเอกสาร", detail["kind"])
-            c2.metric("วันที่", detail["date"] or (str(doc_date) if doc_date else "-"))
+            _d_raw = detail["date"] or (str(doc_date) if doc_date else "-")
+            if len(str(_d_raw)) >= 10 and str(_d_raw)[4:5] == "-" and str(_d_raw)[7:8] == "-":
+                _d_raw = f"{str(_d_raw)[8:10]}/{str(_d_raw)[5:7]}/{str(_d_raw)[0:4]}"
+            c2.metric("วันที่", _d_raw)
             c3.metric("เลขไมล์", f"{int(detail['mileage']):,} กม." if detail.get("mileage") else "-")
             c4.metric("ยอดรวมสุทธิ", f"{float(detail['net'] or 0):,.2f} บาท")
             if detail.get("vendor"):
@@ -306,7 +921,8 @@ def _render_doc_detail_panel(app_dir, db, plate, doc_no, doc_kind=None, doc_date
         # แสดงใบแจ้งซ่อม (repair_request) ที่เกี่ยวข้องในช่วง ±15 วัน
         if db and os.path.exists(db) and doc_date:
             try:
-                d0 = dt.date.fromisoformat(str(doc_date)[:10])
+                ds_ = str(doc_date).strip()[:10]
+                d0 = dt.datetime.strptime(ds_, "%d/%m/%Y").date() if "/" in ds_ else dt.date.fromisoformat(ds_)
                 d_lo = (d0 - dt.timedelta(days=15)).isoformat()
                 d_hi = (d0 + dt.timedelta(days=15)).isoformat()
                 rel = rr.fetch(
@@ -317,36 +933,28 @@ def _render_doc_detail_panel(app_dir, db, plate, doc_no, doc_kind=None, doc_date
                     plate, d_lo, d_hi,
                 )
                 if rel:
+                    rel_df = pd.DataFrame(rel)
+                    for col_r in ("วันที่แจ้งซ่อม", "วันที่เปิดเอกสาร"):
+                        if col_r in rel_df.columns:
+                            rel_df[col_r] = pd.to_datetime(rel_df[col_r], errors="coerce").dt.strftime("%d/%m/%Y").fillna("")
                     st.markdown(f"**ใบแจ้งซ่อมที่เกี่ยวข้องของรถ `{plate}` (ช่วง ±15 วัน)**")
-                    st.dataframe(pd.DataFrame(rel), hide_index=True, **full)
+                    st.dataframe(rel_df, hide_index=True, **full)
             except Exception:
                 pass
 
 
 def _render_draft_plan_tab(app_dir, db, full, kpi_card):
-    """แท็บแสดงร่าง Plan PM หัวลาก 24 เดือน (ม.ค. 2026 – ธ.ค. 2027) สำหรับตรวจและ Export ก่อนนำไปแทน Plan เดิมใน KPI"""
-    st.info(
-        "📌 **ข้อมูลร่างแยกไว้สำหรับตรวจสอบ (รอยืนยันก่อนนำไปแทน Plan เดิมในหน้า KPI)** — "
-        "คำนวณจากประวัติซ่อมจริง (W/O + WX) สำหรับหัวลาก Master (ม.ค. 2026 – ธ.ค. 2027)"
-    )
-    default_path = os.path.join(app_dir, "data", "Plan_PM_หัวลาก_ใหม่_รอยืนยัน.xlsx")
-    raw_bytes = None
-    src_label = None
-    if os.path.exists(default_path):
-        with open(default_path, "rb") as fh:
-            raw_bytes = fh.read()
-        src_label = os.path.basename(default_path)
-    else:
-        up = st.file_uploader("อัปโหลดไฟล์ Plan_PM_หัวลาก_ใหม่_รอยืนยัน.xlsx (โหมด Cloud)", type=["xlsx"], key="pm_draft_up")
-        if up is not None:
-            raw_bytes = up.getvalue()
-            src_label = up.name
-
-    if not raw_bytes:
-        st.warning("ไม่พบไฟล์ร่าง `data/Plan_PM_หัวลาก_ใหม่_รอยืนยัน.xlsx` — กรุณาอัปโหลดไฟล์ด้านบนเพื่อแสดงผล")
+    """แท็บแสดงร่าง Plan PM หัวลาก 24 เดือน (ม.ค. 2026 – ธ.ค. 2027) ดึงและคำนวณสดจากฐานข้อมูล SQLite โดยตรง"""
+    data = _build_draft_pm_from_db(db)
+    if not data:
+        st.warning("ยังไม่มีฐานข้อมูล SQLite — กรุณาเลือกไฟล์ `.sqlite` ทางซ้ายก่อน")
         return
 
-    data = _load_draft_pm_workbook(raw_bytes)
+    st.info(
+        "📌 **ดึงและคำนวณสดจากฐานข้อมูล SQLite (`Repair_Request_v2.sqlite`) โดยตรง** — "
+        "อ้างอิงประวัติซ่อมจริง (`vr_wo_header`, `vr_wo_line`, `vr_issue_line` → `service_doc`), `asset_master` และ `mileage_reading` (ม.ค. 2026 – ธ.ค. 2027)"
+    )
+
     st_map = {r["สถานะ"]: r["จำนวน (คัน)"] for r in data["status"]}
     n_master = len(data["detail"]) if len(data["detail"]) else sum(st_map.values())
     n_norm = st_map.get("ตามรอบปกติ", 0)
@@ -354,27 +962,70 @@ def _render_draft_plan_tab(app_dir, db, full, kpi_card):
     n_nohist = st_map.get("ไม่มีประวัติ PM (2026)", 0)
 
     k = st.columns(4)
-    kpi_card(k[0], "หัวลาก Master", f"{n_master:,}", "คัน (ณ 22/11/2026)")
+    kpi_card(k[0], "หัวลาก Master", f"{n_master:,}", f"คัน (ณ {data['today_str']})")
     kpi_card(k[1], "ตามรอบปกติ", f"{n_norm:,}", "คัน", "ok")
     kpi_card(k[2], "ครบกำหนด พ.ย. + ค้าง", f"{n_due_ovd:,}", "คัน (ยกยอด ธ.ค. 2026)", "warn" if n_due_ovd else "ok")
-    kpi_card(k[3], "ไม่มีประวัติ PM 2026", f"{n_nohist:,}", "คัน (รอคุณโอ๋กำหนดรอบ)", "warn" if n_nohist else "ok")
+    kpi_card(k[3], "ไม่มีประวัติ PM 2026", f"{n_nohist:,}", "คัน (รอคุณแขกกำหนดรอบ)", "warn" if n_nohist else "ok")
     st.write("")
 
-    c_dl1, c_dl2 = st.columns([2.2, 2.8])
+    # เลือกเดือนสำหรับชีต 'สรุป_PM_ประจำเดือน' ตาม Template
+    avail_ym = sorted(data["hist"]["เดือน"].dropna().astype(str).unique().tolist(), reverse=True) if len(data["hist"]) else ["2026-10"]
+    default_ym_idx = avail_ym.index("2026-10") if "2026-10" in avail_ym else 0
+    c_mo_tpl, c_dl1, c_dl2 = st.columns([1.3, 2.2, 2.5])
+    sel_tpl_ym = c_mo_tpl.selectbox(
+        "เดือนสรุป PM (Template)",
+        avail_ym,
+        index=default_ym_idx,
+        key="pm_draft_tpl_ym",
+    )
+    tpl_rows, tpl_dr_txt, tpl_n_chk = _build_monthly_pm_template_rows(db, sel_tpl_ym)
+    _logo_p = None
+    try:
+        import monthly_report as _mr_logo
+        _logo_p = _mr_logo.find_logo_path(app_dir)
+    except Exception:
+        pass
+
+    full_xl_bytes = _df_to_excel_bytes(
+        {
+            "สรุป_Plan_PM_2026": pd.DataFrame(data["plan_2026"]),
+            "สรุป_Plan_PM_2027": pd.DataFrame(data["plan_2027"]),
+            "ตาราง_PM_24เดือน": data["matrix"],
+            "รายละเอียดรายคัน": data["detail"],
+            "ประวัติ_PM_จริง_2026": data["hist"],
+        },
+        monthly_template={
+            "rows": tpl_rows,
+            "date_range_txt": tpl_dr_txt,
+            "sheet_name": f"สรุป_PM_{sel_tpl_ym}",
+            "logo_path": _logo_p,
+        },
+    )
+    c_dl1.write("")
     c_dl1.download_button(
-        "⬇️ Export ร่าง Plan PM 2026–2027 ฉบับเต็ม (Excel 4 ชีต)",
-        raw_bytes,
-        file_name=f"Plan_PM_หัวลาก_2026_2027_{dt.datetime.now():%Y%m%d_%H%M}.xlsx",
+        f"⬇️ Export ร่าง Plan PM ฉบับเต็ม (+ ชีตสรุป PM {sel_tpl_ym})",
+        full_xl_bytes,
+        file_name=f"Plan_PM_หัวลาก_2026_2027_{sel_tpl_ym}_{dt.datetime.now():%Y%m%d_%H%M}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         type="primary",
         key="pm_draft_dl_full",
         **full,
     )
-    c_dl2.caption(f"แหล่งข้อมูล: `{src_label}` · 4 ชีตพร้อมสีและสูตร (`สรุป_Plan_PM_2026_2027`, `ตาราง_PM_217คัน_2026_2027`, `รายละเอียด_217คัน`, `ประวัติ_PM_จริง_2026`)")
+    c_dl2.write("")
+    c_dl2.caption(
+        f"แหล่งข้อมูลสด: `{os.path.basename(db)}` · ประวัติ PM จริงปี 2026 รวม **{len(data['hist']):,}** ครั้ง · "
+        f"เดือน `{sel_tpl_ym}` เข้า PM **{tpl_n_chk:,}** คัน"
+    )
 
     view = st.radio(
         "เลือกมุมมอง",
-        ["📊 สรุปรายเดือน 2026–2027", "🗓️ ตารางรายคัน (24 เดือน)", "📋 รายละเอียดรายคัน", "🧾 ประวัติ PM จริง 2026"],
+        [
+            "📊 สรุปรายเดือน 2026–2027",
+            "🗓️ ตารางรายคัน (24 เดือน)",
+            "📋 รายละเอียดรายคัน",
+            "🧾 ประวัติ PM จริง 2026",
+            f"📑 สรุป PM ประจำเดือน ({sel_tpl_ym})",
+        ],
         horizontal=True,
         key="pm_draft_view",
     )
@@ -445,6 +1096,45 @@ def _render_draft_plan_tab(app_dir, db, full, kpi_card):
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="pm_d_dl_det",
             )
+
+    elif view.startswith("📑 สรุป PM ประจำเดือน"):
+        st.markdown(f"**แผนซ่อมบำรุงรักษา - หัวลาก · {tpl_dr_txt}** (เข้า PM จริง **{tpl_n_chk:,}** คัน จากทั้งหมด **{len(tpl_rows):,}** คัน)")
+        tpl_df = pd.DataFrame(tpl_rows)
+        c_f1, c_f2 = st.columns([1.4, 1.6])
+        only_chk = c_f1.checkbox("แสดงเฉพาะรถที่มีการเข้า PM ในเดือนนี้", value=False, key="pm_tpl_only_chk")
+        q_tpl = c_f2.text_input("ค้นหาทะเบียน / รุ่นรถ / อ้างอิงเอกสาร", key="pm_tpl_q")
+        sub_tpl = tpl_df.copy()
+        if only_chk and len(sub_tpl):
+            sub_tpl = sub_tpl[sub_tpl["อ้างอิงเอกสาร"].astype(str).str.strip() != ""]
+        if q_tpl and len(sub_tpl):
+            mask_t = (
+                sub_tpl["ทะเบียน"].astype(str).str.contains(q_tpl.strip(), case=False, regex=False)
+                | sub_tpl["รุ่นรถ"].astype(str).str.contains(q_tpl.strip(), case=False, regex=False)
+                | sub_tpl["อ้างอิงเอกสาร"].astype(str).str.contains(q_tpl.strip(), case=False, regex=False)
+            )
+            sub_tpl = sub_tpl[mask_t]
+        st.caption(f"แสดง {len(sub_tpl):,} คัน")
+        st.dataframe(sub_tpl, hide_index=True, height=520, **full)
+        # ปุ่ม Export เฉพาะชีตแบบฟอร์มเดือนนี้
+        import openpyxl as _oxl_tpl
+        _wb_single = _oxl_tpl.Workbook()
+        _wb_single.remove(_wb_single.active)
+        _write_monthly_pm_template_sheet(
+            _wb_single,
+            tpl_rows,
+            tpl_dr_txt,
+            sheet_name=f"สรุป_PM_{sel_tpl_ym}",
+            logo_path=_logo_p,
+        )
+        _buf_s = io.BytesIO()
+        _wb_single.save(_buf_s)
+        st.download_button(
+            f"⬇️ Export เฉพาะแบบฟอร์ม สรุป PM ประจำเดือน ({sel_tpl_ym})",
+            _buf_s.getvalue(),
+            file_name=f"สรุป_PM_หัวลาก_{sel_tpl_ym}_{dt.datetime.now():%Y%m%d_%H%M}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="pm_d_dl_tpl_only",
+        )
 
     else:
         hdf = data["hist"]
@@ -519,7 +1209,7 @@ def render_pm(is_local, user, full, app_dir, kpi_card):
     rows = res["rows"]
 
     t_draft, t_plan, t_all, t_imp, t_hist = st.tabs([
-        "📅 ร่าง Plan PM 2026–2027 (รอยืนยัน)",
+        "📅 ร่าง Plan PM 2026–2027 (รอคุณแขกยืนยัน)",
         "📅 แผนรายเดือน (จากฐานข้อมูล)",
         "🚛 สถานะรายคัน",
         "📥 นำเข้าประวัติบริการ",
@@ -593,7 +1283,7 @@ def render_pm(is_local, user, full, app_dir, kpi_card):
                 ss.pop("pm_blob", None)
                 st.rerun()
             st.dataframe(crit, hide_index=True, **full)
-            st.caption("ค่าที่เปลี่ยนใช้เฉพาะการเปิดครั้งนี้ — ค่าเริ่มต้นตามที่ Owner กำหนด (20,000 / 30,000 กม. / 6 เดือน)")
+            st.caption("ค่าที่เปลี่ยนใช้เฉพาะการเปิดครั้งนี้ — ค่าเริ่มต้นตามที่คุณแขก (เจ้าของระบบ) กำหนด (20,000 / 30,000 กม. / 6 เดือน)")
 
     # ------------------------------------------------------------------ all vehicles
     with t_all:
@@ -601,7 +1291,7 @@ def render_pm(is_local, user, full, app_dir, kpi_card):
         if len(adf):
             c1, c2, c3 = st.columns([1.4, 1.4, 1.6])
             fs = c1.multiselect("สถานะ", ["เกินกำหนด", "ครบกำหนดเดือนนี้", "ยังไม่ถึง", "ไม่มีประวัติ PM"], key="pm_fs", placeholder="ทุกสถานะ")
-            ft = c2.multiselect("PM ครั้งล่าสุดที่", ["ศูนย์บริการ", "ลาน", "ยังไม่มีประวัติ PM"], key="pm_ft", placeholder="ทั้งหมด")
+            ft = c2.multiselect("PM ครั้งล่าสุดที่", ["ศูนย์บริการ", "เปลี่ยนเครื่องยนต์", "ลาน", "ยังไม่มีประวัติ PM"], key="pm_ft", placeholder="ทั้งหมด")
             fq = c3.text_input("ค้นหาทะเบียน", key="pm_fq")
             x = adf
             if fs:
@@ -643,6 +1333,8 @@ def render_pm(is_local, user, full, app_dir, kpi_card):
                 kpi_card(k[2], "ไม่เปลี่ยน", f"{len(p['unchanged']):,}", "เอกสาร")
                 ev = pd.DataFrame([d for d in p["new"] + p["update"] if d["pm_type"]])
                 if len(ev):
+                    if "doc_date" in ev.columns:
+                        ev["doc_date"] = pd.to_datetime(ev["doc_date"], errors="coerce").dt.strftime("%d/%m/%Y").fillna("")
                     st.markdown("**ตัวอย่างเอกสารที่นับเป็น PM**")
                     st.dataframe(ev[["asset_code", "doc_kind", "doc_no", "doc_date", "km", "km_status", "pm_type", "pm_items", "vendor"]]
                                  .rename(columns={"asset_code": "ทะเบียน", "doc_kind": "ประเภท", "doc_no": "เลขที่", "doc_date": "วันที่",
@@ -660,9 +1352,12 @@ def render_pm(is_local, user, full, app_dir, kpi_card):
                 if n_act == 0:
                     st.info("ไฟล์นี้อยู่ในฐานข้อมูลครบแล้ว")
         st.markdown("**ประวัติการนำเข้า**")
-        st.dataframe(pd.DataFrame(pm.fetch(db, "SELECT batch_id, file_name ไฟล์, imported_by ผู้นำเข้า, imported_at เวลา, rows_read อ่าน, "
-                                               "rows_inserted ใหม่, rows_updated อัปเดต, rows_unchanged ไม่เปลี่ยน, backup_path ไฟล์สำรอง "
-                                               "FROM service_batch ORDER BY batch_id DESC")), hide_index=True, **full)
+        sb_df = pd.DataFrame(pm.fetch(db, "SELECT batch_id, file_name ไฟล์, imported_by ผู้นำเข้า, imported_at เวลา, rows_read อ่าน, "
+                                          "rows_inserted ใหม่, rows_updated อัปเดต, rows_unchanged ไม่เปลี่ยน, backup_path ไฟล์สำรอง "
+                                          "FROM service_batch ORDER BY batch_id DESC"))
+        if len(sb_df) and "เวลา" in sb_df.columns:
+            sb_df["เวลา"] = pd.to_datetime(sb_df["เวลา"], errors="coerce").dt.strftime("%d/%m/%Y %H:%M").fillna(sb_df["เวลา"])
+        st.dataframe(sb_df, hide_index=True, **full)
 
     # ------------------------------------------------------------------ history
     with t_hist:
@@ -680,6 +1375,8 @@ def render_pm(is_local, user, full, app_dir, kpi_card):
             evs = pd.DataFrame(pm.fetch(db, "SELECT doc_date วันที่, pm_type PM, doc_kind ประเภท, doc_no เลขที่, km เลขไมล์, km_status สถานะเลขไมล์, "
                                             "pm_items รายการ, vendor 'ผู้ขาย/คลัง' FROM service_doc WHERE asset_code=? AND pm_type IS NOT NULL "
                                             "ORDER BY doc_date DESC", p_))
+            if len(evs) and "วันที่" in evs.columns:
+                evs["วันที่"] = pd.to_datetime(evs["วันที่"], errors="coerce").dt.strftime("%d/%m/%Y").fillna("")
             st.markdown("**ประวัติ PM** — 💡 คลิกเลือกแถวเพื่อดูรายละเอียดรายการซ่อม/เบิกพัสดุทั้งหมดในเอกสาร")
             if len(evs):
                 ev_p = st.dataframe(evs, hide_index=True, on_select="rerun", selection_mode="single-row", key="pm_h_ev_tbl", **full)

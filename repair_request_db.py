@@ -4,7 +4,7 @@ Repair Request DB engine v0.2.1 — ใบแจ้งซ่อม (หัวล
 - อ่านไฟล์ได้ทั้งแบบ M1_ซ่อมรถ/M2_ซ่อมหาง/M3_ซ่อมตู้ และแบบรายเดือน หัวลาก/หางพ่วง/ตู้เย็น (หาแถวหัวตารางเอง)
 - นำเข้าเฉพาะคอลัมน์ข้อมูลจริง: เลขที่เอกสาร, วันที่เปิดเอกสาร, วันที่แจ้งซ่อม, เวลา, ทะเบียน/เบอร์ตู้, รหัสพนักงาน, สถานะซ่อม
   (คอลัมน์ทะเบียน/ยี่ห้อ/เดือน/Index/ISO ในไฟล์เป็นสูตร -> คำนวณเองในระบบ)
-- Business key = doc_no (UNIQUE) ; แถวที่ข้อมูลหลักไม่สอดคล้อง -> repair_request_review รอ DATA_OWNER (ไม่เข้าตารางหลัก)
+- Business key = doc_no (UNIQUE) ; แถวที่ข้อมูลหลักไม่สอดคล้อง -> repair_request_review รอคุณแขกตัดสินใจ (ไม่เข้าตารางหลัก)
 """
 import os, re, json, shutil, sqlite3, hashlib, datetime as dt
 
@@ -780,7 +780,7 @@ def append_m_sheets(wb, con, year=None, max_month=None):
                 c = ws.cell(r, j, v)
                 c.font = base_font
                 if j in (3, 4):
-                    c.number_format = "d/m/yyyy"
+                    c.number_format = "dd/mm/yyyy"
             for k, f in enumerate(spec["formulas"]):
                 c = ws.cell(r, 9 + k, f.format(r=r))
                 c.font = base_font
