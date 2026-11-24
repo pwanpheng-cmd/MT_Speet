@@ -959,9 +959,16 @@ def _build_fp_mtd_01_02_excel(db_path):
     # ตรวจสอบคอลัมน์ brand / service_name ที่มีจริง
     am_cols = {c[1] for c in cur.execute("PRAGMA table_info(asset_master)")}
     rr_cols = {c[1] for c in cur.execute("PRAGMA table_info(repair_request)")}
-    brand_expr = "brand" if "brand" in am_cols else "''"
+    brand_expr = "brand" if "brand" in am_cols else ("note" if "note" in am_cols else "''")
     has_svc = "service_name" in rr_cols
     has_km = "current_mileage" in rr_cols
+
+    # fallback รุ่นรถจาก repair_request.brand กรณี asset_master.note ว่าง
+    rr_brand = {}
+    if "brand" in rr_cols:
+        for ac, br in cur.execute("SELECT asset_code, brand FROM repair_request WHERE brand IS NOT NULL AND brand!=''"):
+            if ac not in rr_brand:
+                rr_brand[ac] = str(br).strip()
 
     # ดึงประวัติล่าสุดต่อ (asset_code, category) จาก repair_request.service_name
     latest_cat = {}  # (asset_code, col_key) -> max report_date
@@ -1087,7 +1094,7 @@ def _build_fp_mtd_01_02_excel(db_path):
             note_txt = f"ไมล์ล่าสุด {int(km_info[1]):,} กม. ({_fmt_d(km_info[0])})" if km_info else ""
             row_vals = [
                 idx,
-                (br or "") if sh_name == "หัวลาก" else "",
+                (br or rr_brand.get(ac, "")) if sh_name == "หัวลาก" else "",
                 ac,
                 _fmt_d(latest_cat.get((ac, "pm_oil"), "")),
                 _fmt_d(latest_cat.get((ac, "pm_chassis"), "")),
