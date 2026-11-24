@@ -943,6 +943,186 @@ def _render_doc_detail_panel(app_dir, db, plate, doc_no, doc_kind=None, doc_date
                 pass
 
 
+def _build_fp_mtd_01_02_excel(db_path):
+    """สร้างไฟล์ Excel แบบฟอร์ม FP-MTD-01-02 REV.01 รวมทุกประเภทอุปกรณ์ในไฟล์เดียว (แยกชีต หัวลาก / หางพ่วง / ตู้)"""
+    import sqlite3
+    import openpyxl
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+
+    # ตรวจสอบคอลัมน์ brand / service_name ที่มีจริง
+    am_cols = {c[1] for c in cur.execute("PRAGMA table_info(asset_master)")}
+    rr_cols = {c[1] for c in cur.execute("PRAGMA table_info(repair_request)")}
+    brand_expr = "brand" if "brand" in am_cols else "''"
+    has_svc = "service_name" in rr_cols
+    has_km = "current_mileage" in rr_cols
+
+    # ดึงประวัติล่าสุดต่อ (asset_code, category) จาก repair_request.service_name
+    latest_cat = {}  # (asset_code, col_key) -> max report_date
+    latest_km = {}   # asset_code -> (max_date, km)
+    if has_svc:
+        q = (
+            "SELECT asset_code, report_date, service_name"
+            + (", current_mileage" if has_km else ", NULL")
+            + " FROM repair_request WHERE asset_code IS NOT NULL AND report_date IS NOT NULL ORDER BY report_date"
+        )
+        for ac, rdt, sname, km in cur.execute(q):
+            sn = str(sname or "")
+            if km and float(km) > 0:
+                prev = latest_km.get(ac)
+                if not prev or str(rdt) >= prev[0]:
+                    latest_km[ac] = (str(rdt), float(km))
+            keys = []
+            if any(k in sn for k in ("เปลี่ยนถ่ายน้ำมันเครื่อง", "เปลี่ยนถ่ายน้ำมันเฟืองท้าย", "เช็คระยะเปลี่ยนถ่าย", "30,000", "60,000", "45,000")):
+                keys.append("pm_oil")
+            if any(k in sn for k in ("ช่วงล่าง", "ระบบเบรค", "ระบบคลัตซ์", "จาระบีลูกปืนล้อ", "120,000")):
+                keys.append("pm_chassis")
+            if any(k in sn for k in ("ลมยาง", "ดอกยาง", "มิลยาง", "งานยาง")):
+                keys.append("pm_tire")
+            if any(k in sn for k in ("หางพ่วง", "ระบบไฟ / ระบบลม")):
+                keys.append("pm_trailer")
+            if any(k in sn for k in ("ทวิตล็อค", "Twist Lock")):
+                keys.append("pm_twist")
+            if "20,000" in sn:
+                keys.append("km_20k")
+            if "30,000" in sn:
+                keys.append("km_30k")
+            if "45,000" in sn:
+                keys.append("km_45k")
+            for k in keys:
+                if str(rdt) > latest_cat.get((ac, k), ""):
+                    latest_cat[(ac, k)] = str(rdt)
+
+    def _fmt_d(iso_d):
+        if not iso_d or len(iso_d) < 10:
+            return ""
+        return f"{iso_d[8:10]}/{iso_d[5:7]}/{iso_d[0:4]}"
+
+    thin = Side(style="thin", color="BFBFBF")
+    bdr = Border(left=thin, right=thin, top=thin, bottom=thin)
+    hdr_fill = PatternFill("solid", fgColor="1F4E78")
+    sub_fill = PatternFill("solid", fgColor="D9E1F2")
+    alt_fill = PatternFill("solid", fgColor="F7FAFC")
+
+    sheet_specs = [
+        ("หัวลาก", "หัวลาก", "ทะเบียน"),
+        ("หางพ่วง", "หางพ่วง", "ทะเบียน"),
+        ("ตู้", "ตู้เย็น", "เบอร์ตู้"),
+    ]
+
+    for sh_name, db_atype, plate_lbl in sheet_specs:
+        ws = wb.create_sheet(title=sh_name)
+        ws.views.sheetView[0].showGridLines = True
+
+        # หัวบริษัท (แถว 1-4)
+        ws.merge_cells("A1:L1")
+        ws["A1"] = "บริษัท สปีด อินเตอร์ ทรานสปอร์ต จำกัด (สำนักงานใหญ่)"
+        ws["A1"].font = Font(name="Tahoma", size=12, bold=True)
+        ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+
+        ws.merge_cells("A2:L2")
+        ws["A2"] = "36/34-36 ถนนมอเตอร์เวย์ แขวงคลองสองต้นนุ่น เขตลาดกระบัง กรุงเทพมหานคร 10520"
+        ws["A2"].font = Font(name="Tahoma", size=9)
+        ws["A2"].alignment = Alignment(horizontal="center", vertical="center")
+
+        ws.merge_cells("A3:L3")
+        ws["A3"] = "Head Office : 02-171-7918-20  Fax : 02-171-7922   |   เลขที่ผู้เสียภาษี 0105543094654"
+        ws["A3"].font = Font(name="Tahoma", size=9)
+        ws["A3"].alignment = Alignment(horizontal="center", vertical="center")
+
+        ws.merge_cells("A4:L4")
+        ws["A4"] = f"แผนและบันทึกการซ่อมบำรุงรักษา — ประเภท: {sh_name}"
+        ws["A4"].font = Font(name="Tahoma", size=11, bold=True, color="1F4E78")
+        ws["A4"].alignment = Alignment(horizontal="left", vertical="center")
+
+        headers = [
+            "ลำดับ",
+            "รุ่น",
+            plate_lbl,
+            "เช็คระยะ/เปลี่ยนถ่าย",
+            "เช็คช่วงล่าง/ระบบคลัทซ์/ระบบเบรค/เช็คจารบีลูกปืนล้อ",
+            "ตรวจเช็คลมยางเช็คมิลยาง",
+            "เช็คสภาพทั่วไปหางพ่วง ระบบไฟ ระบบลม",
+            "เช็คทวิตล็อคตู้",
+            "ทุก 20,000 กม. (ศูนย์บริการ)",
+            "ทุก 30,000 กม.(ลานบริษัท)",
+            "ทุก 45,000 กม.(ศูนย์บริการ)",
+            "หมายเหตุ",
+        ]
+        sub_headers = [
+            "", "", "",
+            "ทุก 6 เดือน", "ทุก 6 เดือน", "ทุก 4 เดือน", "ทุก 4 เดือน", "ทุก 4 เดือน",
+            "", "", "", "",
+        ]
+        for ci, h in enumerate(headers, 1):
+            cell = ws.cell(row=6, column=ci, value=h)
+            cell.font = Font(name="Tahoma", size=9, bold=True, color="FFFFFF")
+            cell.fill = hdr_fill
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border = bdr
+        ws.row_dimensions[6].height = 36
+
+        for ci, sh_txt in enumerate(sub_headers, 1):
+            cell = ws.cell(row=7, column=ci, value=sh_txt)
+            cell.font = Font(name="Tahoma", size=8, bold=True, color="1F4E78")
+            cell.fill = sub_fill
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = bdr
+        ws.row_dimensions[7].height = 20
+
+        assets = cur.execute(
+            f"SELECT asset_code, {brand_expr} FROM asset_master WHERE asset_type=? ORDER BY asset_code",
+            (db_atype,),
+        ).fetchall()
+
+        for idx, (ac, br) in enumerate(assets, 1):
+            r_idx = 7 + idx
+            km_info = latest_km.get(ac)
+            note_txt = f"ไมล์ล่าสุด {int(km_info[1]):,} กม. ({_fmt_d(km_info[0])})" if km_info else ""
+            row_vals = [
+                idx,
+                (br or "") if sh_name == "หัวลาก" else "",
+                ac,
+                _fmt_d(latest_cat.get((ac, "pm_oil"), "")),
+                _fmt_d(latest_cat.get((ac, "pm_chassis"), "")),
+                _fmt_d(latest_cat.get((ac, "pm_tire"), "")),
+                _fmt_d(latest_cat.get((ac, "pm_trailer"), "")),
+                _fmt_d(latest_cat.get((ac, "pm_twist"), "")),
+                _fmt_d(latest_cat.get((ac, "km_20k"), "")),
+                _fmt_d(latest_cat.get((ac, "km_30k"), "")),
+                _fmt_d(latest_cat.get((ac, "km_45k"), "")),
+                note_txt,
+            ]
+            for ci, val in enumerate(row_vals, 1):
+                c = ws.cell(row=r_idx, column=ci, value=val)
+                c.font = Font(name="Tahoma", size=9)
+                c.border = bdr
+                c.alignment = Alignment(horizontal="center" if ci != 12 else "left", vertical="center")
+                if idx % 2 == 0:
+                    c.fill = alt_fill
+
+        footer_row = 7 + len(assets) + 2
+        ws.cell(row=footer_row, column=12, value="FP-MTD-01-02 REV.01").font = Font(name="Tahoma", size=8, italic=True, color="555555")
+        ws.cell(row=footer_row, column=12).alignment = Alignment(horizontal="right")
+
+        col_widths = [7, 14, 15, 16, 20, 16, 18, 15, 16, 16, 16, 28]
+        for ci, w in enumerate(col_widths, 1):
+            ws.column_dimensions[get_column_letter(ci)].width = w
+        ws.freeze_panes = "D8"
+
+    conn.close()
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
+
+
 def _render_draft_plan_tab(app_dir, db, full, kpi_card):
     """แท็บแสดงร่าง Plan PM หัวลาก 24 เดือน (ม.ค. 2026 – ธ.ค. 2027) ดึงและคำนวณสดจากฐานข้อมูล SQLite โดยตรง"""
     data = _build_draft_pm_from_db(db)
@@ -1012,7 +1192,16 @@ def _render_draft_plan_tab(app_dir, db, full, kpi_card):
         **full,
     )
     c_dl2.write("")
-    c_dl2.caption(
+    fp_xl_bytes = _build_fp_mtd_01_02_excel(db)
+    c_dl2.download_button(
+        "📋 Export แบบฟอร์ม FP-MTD-01-02 REV.01 (รวมทุกอุปกรณ์)",
+        fp_xl_bytes,
+        file_name=f"FP-MTD-01-02_REV01_แผนและบันทึกการซ่อมบำรุงรักษา_{dt.datetime.now():%Y%m%d_%H%M}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="pm_draft_dl_fp_mtd",
+        **full,
+    )
+    st.caption(
         f"แหล่งข้อมูลสด: `{os.path.basename(db)}` · ประวัติ PM จริงปี 2026 รวม **{len(data['hist']):,}** ครั้ง · "
         f"เดือน `{sel_tpl_ym}` เข้า PM **{tpl_n_chk:,}** คัน"
     )
